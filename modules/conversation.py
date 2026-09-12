@@ -6,6 +6,7 @@ SDK 的 client.get(path) 会拼成 /api/v2/serve{path}，无法直接用于 v1 A
 所以这里用 httpx 直接请求 v1 路径。
 """
 import os
+import re
 from typing import Optional
 
 import httpx
@@ -50,6 +51,30 @@ def _resolve_ids(datasource_name: str = None, knowledge_space_name: str = None) 
     finally:
         conn.close()
     return result
+
+
+def _clean_summary(summary: str) -> str:
+    """清洗会话摘要：去除数据源/知识库等附加信息，只保留用户提问内容。"""
+    if not summary:
+        return ""
+    s = str(summary).strip()
+    # 去除 【数据源:xxx】 等前缀
+    s = re.sub(r'^【[^】]*】\s*', '', s)
+    # 去除前缀中的 "数据源:xxx |" "知识库:yyy |" 等
+    s = re.sub(r'^数据源[:：]\s*\S+\s*[|｜]\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'^知识库[:：]\s*\S+\s*[|｜]\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'^[|｜]\s*数据源[:：]\s*\S+\s*[|｜]\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'^[|｜]\s*知识库[:：]\s*\S+\s*[|｜]\s*', '', s, flags=re.IGNORECASE)
+    # 按分隔符拆分，过滤掉数据源/知识库/技能/连接器等前缀段
+    parts = re.split(r'[|｜]', s)
+    filtered = [p.strip() for p in parts if not re.match(
+        r'^(数据源|数据库|知识库|knowledge|datasource|data\s*source|技能|skill|连接器|connector)[:：]',
+        p.strip(), re.IGNORECASE
+    )]
+    s = ' '.join(filtered).strip()
+    if not s:
+        s = str(summary).strip()
+    return s
 
 
 def _update_conv_binding(conv_uid: str, datasource_id: int = None, knowledge_space_id: int = None, prompt_code: str = None, status: str = None):
@@ -205,26 +230,28 @@ async def new_conversation(req: NewConversationRequest):
 
 @router.get("/list")
 async def list_conversations(user_name: Optional[str] = None, sys_code: Optional[str] = None):
-    """列出会话。摘要使用第一条问题内容。
+    """列出会话。摘要使用第一条问题内容，按最后消息时间排序。
 
     API: GET /api/v1/chat/dialogue/list
+
+    性能优化：对所有会话并行获取消息历史和绑定信息（asyncio.gather），
+    避免串行 N 次请求的累积延迟。
     """
     try:
         data = await _v1_get("/list", user_name=user_name, sys_code=sys_code)
-        # DB-GPT 返回 {success, data: [...]}，提取 data
         convs = data
         if isinstance(data, dict) and "data" in data:
             convs = data["data"]
         if not isinstance(convs, list):
             convs = []
 
-        # 对每条会话，如果 summary 为空，获取第一条问题作为摘要
-        # 同时过滤掉没有消息的空会话
-        result = []
-        for cv in convs:
-            summary = cv.get("summary") or ""
+        # ★ 并行获取所有会话的消息历史 + 绑定信息
+        async def _fetch_conv_detail(cv):
+            """并行获取单个会话的消息历史和绑定信息。"""
             uid = cv.get("conv_uid") or ""
+            summary = _clean_summary(cv.get("summary") or "")
             has_messages = False
+            last_message_time = ""
             if uid:
                 try:
                     msg_data = await _v1_get("/messages/history", con_uid=uid)
@@ -233,29 +260,42 @@ async def list_conversations(user_name: Optional[str] = None, sys_code: Optional
                         msgs = msg_data["data"]
                     if isinstance(msgs, list) and len(msgs) > 0:
                         has_messages = True
-                        # 如果 summary 为空，用第一条 human 消息作为摘要
                         if not summary:
                             first_human = next((m for m in msgs if m.get("role") == "human"), None)
                             if first_human:
                                 summary = (first_human.get("context") or first_human.get("content") or "")[:100]
+                        summary = _clean_summary(summary)
+                        last_msg = msgs[-1]
+                        last_message_time = (
+                            last_msg.get("gmt_created")
+                            or last_msg.get("time_stamp")
+                            or last_msg.get("create_time")
+                            or ""
+                        )
+                        if isinstance(last_message_time, str):
+                            last_message_time = last_message_time.strip()
                 except Exception:
                     pass
-            # 跳过空会话（无消息）
             if not has_messages:
-                continue
-            # 读取会话绑定的数据源/知识库
+                return None
             binding = _get_conv_binding(uid) if uid else {}
-            result.append({
+            return {
                 "conv_uid": uid,
                 "summary": summary,
                 "app_code": cv.get("app_code", ""),
                 "user_name": cv.get("user_name", ""),
                 "gmt_created": cv.get("gmt_created", ""),
+                "last_message_time": last_message_time,
                 "database_name": binding.get("database_name", ""),
                 "knowledge_space": binding.get("knowledge_space", ""),
                 "prompt_code": binding.get("prompt_code", ""),
                 "status": binding.get("status", "active"),
-            })
+            }
+
+        # ★ 并行执行所有会话的详情获取（asyncio.gather）
+        import asyncio
+        detail_results = await asyncio.gather(*[_fetch_conv_detail(cv) for cv in convs], return_exceptions=True)
+        result = [r for r in detail_results if r is not None and not isinstance(r, Exception)]
         return {"ok": True, "conversations": result}
     except HTTPException:
         raise

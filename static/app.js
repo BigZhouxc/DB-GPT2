@@ -118,30 +118,20 @@ function navigate(page) {
     _saveActiveSession();
   }
 
-  // 点击「智能问答」tab 时：
-  // - 有活跃会话 → 恢复最近一个（不丢失对话内容）
-  // - 在应用模式且无活跃会话 → 退出应用回空白首页
-  // - 都没有 → 回空白首页
+  // 点击「智能问答」tab 时：总是新建空白会话
+  // 活跃会话在后台继续运行（SSE 不中断），用户通过侧边栏切回
+  // 从应用新建会话的逻辑也走这里（只是带上数据源/知识库）
   if (page === "ask") {
-    if (_currentAppCode && _activeSessions.length === 0) {
-      exitAppChat();
-      return;
+    // 先保存当前活跃会话（parking 移走 DOM 节点，不中止 SSE）
+    _saveActiveSession();
+    // 退出应用模式（清除应用锁定，但不影响活跃会话）
+    if (_currentAppCode) {
+      _currentAppCode = null;
+      _currentAppConfig = null;
+      const indicator = document.getElementById("app-indicator");
+      if (indicator) indicator.style.display = "none";
     }
-    if (_activeSessions.length > 0) {
-      // 恢复最近的活跃会话
-      const targetIdx = _currentActiveIdx >= 0 ? _currentActiveIdx : _activeSessions.length - 1;
-      switchToActiveSession(targetIdx);
-      // switchToActiveSession 已切换页面，不需要继续走下面的 navigate 逻辑
-      State.currentPage = "ask";
-      document.querySelectorAll(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.page === "ask"));
-      document.getElementById("topbar-title").textContent = PAGES.ask.title;
-      document.getElementById("topbar-subtitle").textContent = PAGES.ask.subtitle;
-      document.querySelectorAll(".page-content").forEach(el => el.classList.add("content-hidden"));
-      const askPage = document.getElementById("page-ask");
-      if (askPage) askPage.classList.remove("content-hidden");
-      return;
-    }
-    // 无活跃会话：重置状态回空白首页
+    // 无条件新建空白会话：清空 State，显示欢迎页
     State.currentSessionId = "";
     _currentConvUid = null;
     State.selectedDatasource = "";
@@ -150,13 +140,22 @@ function navigate(page) {
     State.selectedConnectors = [];
     State.attachedFiles = [];
     State.chatHistory = [];
-    _currentActiveIdx = -1;
+    _currentActiveConvUid = null;
+    _currentViewingConvUid = null; // ★ 新建空白会话，不高亮任何项
     document.getElementById("ask-chat").style.display = "none";
     document.getElementById("ask-welcome").style.display = "flex";
     document.getElementById("chat-messages").innerHTML = "";
+    // ★ 清空输入框
+    const chatInput = document.getElementById("chat-input");
+    if (chatInput) { chatInput.value = ""; chatInput.style.height = "auto"; }
+    const heroInput = document.getElementById("hero-input");
+    if (heroInput) { heroInput.value = ""; heroInput.style.height = "auto"; }
+    // 恢复工具栏可点击
     lockAppToolbar({ database_name: "", knowledge_space: "" });
     syncToolLabels();
     _renderActiveSessions();
+    loadRecentSessions();
+    // 不 return，继续走下面的 navigate 通用逻辑（切换页面显示）
   }
   State.currentPage = page;
   document.querySelectorAll(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.page === page));
@@ -425,31 +424,16 @@ function sendFromHero() {
   const input = document.getElementById("hero-input");
   const question = input.value.trim();
   if (!question) return;
+  // ★ 清空 hero 输入框
+  input.value = "";
+  input.style.height = "auto";
   // 切换到对话视图
   document.getElementById("ask-welcome").style.display = "none";
   document.getElementById("ask-chat").style.display = "flex";
   document.getElementById("chat-mode-info").textContent = `模式: ${getModeLabel()}`;
   updateChatContextDisplay();
-  // 非应用模式下，如果没有会话则先创建新会话
-  (async () => {
-    if (!State.currentSessionId && !_currentAppCode) {
-      try {
-        const resp = await fetch(API_BASE + "/conversations/new", {
-          method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            datasource_name: State.selectedDatasource || "",
-            knowledge_space_name: State.selectedKnowledge || "",
-          }),
-        });
-        const data = await resp.json();
-        if (data.ok && data.conversation) {
-          const inner = data.conversation.data || data.conversation;
-          State.currentSessionId = inner.conv_uid || "";
-        }
-      } catch {}
-    }
-    sendQuestion(question);
-  })();
+  // 直接发送，sendQuestion 中的安全网会延迟创建会话
+  sendQuestion(question);
 }
 
 function clearChat() {
@@ -479,7 +463,8 @@ async function newChatSession() {
   // 非应用模式：回到空白首页
   State.currentSessionId = "";
   _currentConvUid = null;
-  _currentActiveIdx = -1;
+  _currentActiveConvUid = null;
+  _currentViewingConvUid = null; // ★ 新建会话，不高亮任何项
   State.chatHistory = [];
   State.selectedDatasource = "";
   State.selectedKnowledge = "";
@@ -489,9 +474,16 @@ async function newChatSession() {
   document.getElementById("ask-chat").style.display = "none";
   document.getElementById("ask-welcome").style.display = "flex";
   document.getElementById("chat-messages").innerHTML = "";
+  // ★ 清空输入框
+  const chatInput = document.getElementById("chat-input");
+  if (chatInput) { chatInput.value = ""; chatInput.style.height = "auto"; }
+  const heroInput = document.getElementById("hero-input");
+  if (heroInput) { heroInput.value = ""; heroInput.style.height = "auto"; }
   // 恢复工具栏可点击
   lockAppToolbar({ database_name: "", knowledge_space: "" });
   syncToolLabels();
+  _renderActiveSessions();
+  loadRecentSessions();
   toast("已新建会话", "info");
 }
 
@@ -535,37 +527,53 @@ async function sendQuestion(presetQuestion) {
     input.style.height = "auto";
   }
 
-  // 安全网：如果没有会话 ID，先创建新会话（防止直接发送时无会话）
-  if (!State.currentSessionId && !_currentAppCode && !_currentConvUid) {
-    try {
-      const resp = await fetch(API_BASE + "/conversations/new", {
-        method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          datasource_name: State.selectedDatasource || "",
-          knowledge_space_name: State.selectedKnowledge || "",
-        }),
-      });
-      const data = await resp.json();
-      if (data.ok && data.conversation) {
-        const inner = data.conversation.data || data.conversation;
-        State.currentSessionId = inner.conv_uid || "";
-        _currentConvUid = inner.conv_uid || "";
-        // 新会话设为 active（进行中）
-        fetch(API_BASE + "/conversations/set-status", {
-          method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({ conv_uid: inner.conv_uid, status: "active" }),
-        }).catch(() => {});
-      }
-    } catch {}
-  }
-
+  // ★ 先切 UI（非阻塞），让用户立即看到反馈
   const mode = inferMode();
   const sendBtn = document.getElementById("chat-send-btn");
   const stopBtn = document.getElementById("chat-stop-btn");
   if (sendBtn) sendBtn.disabled = true;
   if (sendBtn) sendBtn.style.display = "none";
   if (stopBtn) stopBtn.style.display = "flex";
-  _abortController = new AbortController();
+
+  // 延迟创建会话（参考 Hermes createBackendSessionForSend）
+  // 只有首次发送时才创建后端会话，后续复用同一会话 ID
+  // ★ 改为 await 但在 UI 变化之后执行，减少用户感知延迟
+  if (!State.currentSessionId && !_currentConvUid) {
+    try {
+      const body = {
+        datasource_name: State.selectedDatasource || "",
+        knowledge_space_name: State.selectedKnowledge || "",
+      };
+      if (_currentAppCode && _currentAppConfig?.resources?.prompt_template) {
+        body.prompt_code = _currentAppConfig.resources.prompt_template;
+      }
+      const resp = await fetch(API_BASE + "/conversations/new", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (data.ok && data.conversation) {
+        const inner = data.conversation.data || data.conversation;
+        State.currentSessionId = inner.conv_uid || "";
+        _currentConvUid = inner.conv_uid || "";
+        _currentActiveConvUid = inner.conv_uid;
+        _currentViewingConvUid = inner.conv_uid;
+        // 新会话设为 active（进行中）— fire-and-forget
+        fetch(API_BASE + "/conversations/set-status", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ conv_uid: inner.conv_uid, status: "active" }),
+        }).catch(() => {});
+        _ensureSessionState(inner.conv_uid);
+      }
+    } catch {}
+  }
+
+  _getAbortController(); // 确保当前会话有独立的 AbortController
+  // ★ 在发送时捕获当前会话 UID，整个 SSE 生命周期使用此值（防止用户切换会话后 UID 漂移）
+  const sessionUid = _currentConvUid || State.currentSessionId;
+  if (sessionUid) _setSessionWorking(sessionUid, true);
+  _renderActiveSessions();
+  loadRecentSessions(); // ★ 立即刷新"最近会话"列表，把该会话从最近会话中移除（避免延迟）
 
   const common = {
     session: _currentAppCode ? (_currentConvUid || "") : (State.currentSessionId || ""),
@@ -609,25 +617,55 @@ async function sendQuestion(presetQuestion) {
     aiTextEl.innerHTML = `<span style="color:var(--danger)">请求失败: ${escapeHtml(err.message)}</span>`;
   }
 
-  if (sendBtn) sendBtn.disabled = false;
-  if (sendBtn) sendBtn.style.display = "flex";
-  if (stopBtn) stopBtn.style.display = "none";
-  _abortController = null;
-  // 保存活跃会话快照（SSE 完成后更新侧边栏列表）
-  _saveActiveSession();
+  // SSE 完成：清理当前会话的 AbortController，切换按钮
+  // ★ 使用捕获的 sessionUid 而非 _currentConvUid（防止用户切换会话后 UID 漂移）
+  const convKey = sessionUid || "_default";
+  delete _abortControllers[convKey];
+  if (sessionUid) {
+    _setSessionWorking(sessionUid, false);
+    // ★ set-status 改为 fire-and-forget（不 await），先刷新 UI 再后台写状态
+    fetch(API_BASE + "/conversations/set-status", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ conv_uid: sessionUid, status: "inactive" }),
+    }).catch(() => {});
+  }
+  // 只有当当前显示的会话 == sessionUid 时才切换按钮（用户可能已切到其他会话）
+  if (_currentActiveConvUid === sessionUid) {
+    if (sendBtn) sendBtn.disabled = false;
+    if (sendBtn) sendBtn.style.display = "flex";
+    if (stopBtn) stopBtn.style.display = "none";
+  }
+  // ★ SSE 完成后不清空聊天界面，只更新侧边栏列表位置（进行中 → 最近会话）
+  // 不调用 _saveActiveSession()（那会把 DOM 移到 parking，导致界面清空）
+  _renderActiveSessions();
+  // ★ 立即刷新"最近会话"列表（前端 _workingSessionIds 已更新，无需等后端 status 写入）
+  loadRecentSessions();
   if (input) input.focus();
 }
 
 // 停止正在进行的请求
-function stopQuestion() {
-  if (_abortController) {
-    _abortController.abort();
-    _abortController = null;
+async function stopQuestion() {
+  const convKey = _currentConvUid || State.currentSessionId || "_default";
+  if (_abortControllers[convKey]) {
+    _abortControllers[convKey].abort();
+    delete _abortControllers[convKey];
+  }
+  const stoppedUid = _currentConvUid || State.currentSessionId;
+  if (stoppedUid) {
+    _setSessionWorking(stoppedUid, false);
+    // ★ set-status 改为 fire-and-forget（不 await），先刷新 UI
+    fetch(API_BASE + "/conversations/set-status", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ conv_uid: stoppedUid, status: "inactive" }),
+    }).catch(() => {});
   }
   const sendBtn = document.getElementById("chat-send-btn");
   const stopBtn = document.getElementById("chat-stop-btn");
   if (sendBtn) { sendBtn.disabled = false; sendBtn.style.display = "flex"; }
   if (stopBtn) stopBtn.style.display = "none";
+  _renderActiveSessions();
+  // ★ 立即刷新"最近会话"列表
+  loadRecentSessions();
   toast("已停止", "info");
 }
 const AGENT_STAGES = ["解析问题", "检索 / 生成", "执行 / 调用", "汇总回答"];
@@ -717,6 +755,7 @@ async function sendReactAgent(body, aiTextEl) {
           badgeEl: stepEl.querySelector(".react-step-badge"),
           actionEl: stepEl.querySelector(".react-step-action"),
           rawContent: "",
+          _pendingRender: false,  // ★ 节流标记
         };
       } else {
         const entry = stepEls[stepId];
@@ -753,15 +792,20 @@ async function sendReactAgent(body, aiTextEl) {
       if (entry && entry.bodyEl && data.content) {
         const loading = entry.bodyEl.querySelector(".react-step-loading");
         if (loading) loading.remove();
-        // 累积全文后整体渲染，确保跨分片的表格/代码块正确匹配
         entry.rawContent += data.content;
-        // 保留 meta 阶段插入的 thought/action/sql（如果存在）
-        const metaNodes = entry.bodyEl.querySelectorAll(".react-step-thought-full, .react-step-action-label, .react-step-sql");
-        let metaHtml = "";
-        metaNodes.forEach(n => { metaHtml += n.outerHTML; });
-        entry.bodyEl.innerHTML = metaHtml + renderMarkdown(entry.rawContent);
+        // ★ 节流：用 rAF + 脏标记，避免每个 chunk 都全量 renderMarkdown
+        if (!entry._pendingRender) {
+          entry._pendingRender = true;
+          requestAnimationFrame(() => {
+            entry._pendingRender = false;
+            const metaNodes = entry.bodyEl.querySelectorAll(".react-step-thought-full, .react-step-action-label, .react-step-sql");
+            let metaHtml = "";
+            metaNodes.forEach(n => { metaHtml += n.outerHTML; });
+            entry.bodyEl.innerHTML = metaHtml + renderMarkdown(entry.rawContent);
+            scrollChatBottom();
+          });
+        }
       }
-      scrollChatBottom();
     } else if (type === "step.done") {
       const stepId = data.id || currentStepId || `step-${stepCount}`;
       const entry = stepEls[stepId];
@@ -814,7 +858,7 @@ async function sendReactAgent(body, aiTextEl) {
       // 流结束 —— 兜底确保进度条走到最后一步
       setAgentStage(progressEl, 3);
     }
-  }, _abortController?.signal);
+  }, _currentSignal());
   Object.values(stepEls).forEach(entry => {
     if (entry.bodyEl && entry.bodyEl.querySelector(".react-step-loading")) {
       entry.bodyEl.querySelector(".react-step-loading").textContent = "无输出";
@@ -836,6 +880,18 @@ async function sendSimpleStream(body, aiTextEl) {
   // 简洁 UI：打字机指示器 → 逐字累积渲染
   aiTextEl.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
   let rawContent = "";
+  // ★ 节流：用 rAF + 脏标记，避免每个 chunk 都全量 renderMarkdown
+  let _pendingRender = false;
+  let _finalRender = false;
+  function _scheduleRender() {
+    if (_pendingRender) return;
+    _pendingRender = true;
+    requestAnimationFrame(() => {
+      _pendingRender = false;
+      aiTextEl.innerHTML = renderMarkdown(rawContent);
+      if (!_finalRender) scrollChatBottom();
+    });
+  }
 
   await apiStreamSSE("/ask/stream", body, (data) => {
     if (!data) return;
@@ -843,18 +899,17 @@ async function sendSimpleStream(body, aiTextEl) {
 
     if (type === "chunk") {
       if (data.content) {
-        // 第一次收到内容时清除打字机
         const typing = aiTextEl.querySelector(".typing-indicator");
         if (typing) typing.remove();
         rawContent += data.content;
-        aiTextEl.innerHTML = renderMarkdown(rawContent);
-        scrollChatBottom();
+        _scheduleRender(); // ★ 节流渲染
       }
     } else if (type === "done") {
-      // 流结束
       const typing = aiTextEl.querySelector(".typing-indicator");
       if (typing) typing.remove();
-      // 兜底：若无任何内容
+      // ★ 最终渲染（确保完整内容显示）
+      _finalRender = true;
+      aiTextEl.innerHTML = renderMarkdown(rawContent);
       if (!rawContent.trim()) {
         aiTextEl.innerHTML = '<div class="react-error">⚠️ 未收到有效响应</div>';
       }
@@ -863,7 +918,7 @@ async function sendSimpleStream(body, aiTextEl) {
       if (typing) typing.remove();
       aiTextEl.innerHTML = `<div class="react-error">⚠️ ${escapeHtml(data.message || "未知错误")}</div>`;
     }
-  }, _abortController?.signal);
+  }, _currentSignal());
 }
 
 // ==========================================================================
@@ -2006,7 +2061,7 @@ async function loadConversations() {
       html += `<div class="table-wrapper"><table class="data-table"><thead><tr><th>会话摘要</th><th>创建时间</th><th>操作</th></tr></thead><tbody>`;
       convs.forEach(c => {
         const uid = c.conv_uid || c.con_uid || "";
-        const summary = c.summary || c.title || uid;
+        const summary = _cleanSummary(c.summary || c.title || uid);
         const created = c.gmt_created || c.create_time || "";
         html += `<tr><td>${escapeHtml(summary)}</td><td>${escapeHtml(created)}</td><td><button class="btn btn-sm" onclick="resumeConversation('${uid}')">恢复对话</button> <button class="btn btn-sm btn-danger" onclick="deleteConversation('${uid}', this)">删除</button></td></tr>`;
       });
@@ -2086,12 +2141,36 @@ async function resumeConversation(convUid) {
     lockAppToolbar({ database_name: dbName, knowledge_space: kbName, lockAlways: true });
     syncToolLabels();
 
-    // ★ 第6步：渲染历史消息（只渲染一次）
+    // ★ 第6步：根据后端实时 status 切换终止/发送按钮
+    const convStatus = binding.status || "inactive";
+    _updateSendStopButtons(convStatus === "active");
+
+    // ★ 第7步：渲染历史消息（只渲染一次）
     _renderHistoryMessages(msgs);
+
+    // ★ 第8步：注册到状态缓存 + 设置 currentActive
+    _ensureSessionState(convUid);
+    _currentActiveConvUid = convUid;
+    _currentViewingConvUid = convUid; // ★ 用于"最近会话"高亮
+    const st = _sessionStateMap.get(convUid);
+    if (st) {
+      st.appCode = _currentAppCode;
+      st.appConfig = _currentAppConfig;
+      st.state = {
+        currentSessionId: State.currentSessionId,
+        selectedDatasource: State.selectedDatasource,
+        selectedKnowledge: State.selectedKnowledge,
+        selectedSkill: State.selectedSkill,
+        selectedConnectors: [...State.selectedConnectors],
+        attachedFiles: [...State.attachedFiles],
+      };
+      st.scrollTop = document.getElementById("chat-messages")?.scrollTop || 0;
+    }
+    _renderActiveSessions();
+    loadRecentSessions(); // ★ 刷新"最近会话"列表高亮
 
     if (msgs.length === 0) toast("该会话无历史消息", "info");
     else toast(`已恢复会话 (${msgs.length} 条消息)`, "success");
-    // 历史会话恢复不加入活跃会话列表——只有正在对话的才是活跃会话
   } catch (e) { toast("加载历史消息失败: " + e.message, "error"); }
 }
 
@@ -2106,6 +2185,20 @@ function _switchToAskPage() {
   if (askPage) askPage.classList.remove("content-hidden");
   document.getElementById("ask-welcome").style.display = "none";
   document.getElementById("ask-chat").style.display = "flex";
+}
+
+// 根据会话运行状态切换发送/终止按钮
+// isRunning=true → 显示终止按钮；isRunning=false → 显示发送按钮
+function _updateSendStopButtons(isRunning) {
+  const sendBtn = document.getElementById("chat-send-btn");
+  const stopBtn = document.getElementById("chat-stop-btn");
+  if (isRunning) {
+    if (sendBtn) { sendBtn.disabled = true; sendBtn.style.display = "none"; }
+    if (stopBtn) { stopBtn.style.display = "flex"; stopBtn.disabled = false; }
+  } else {
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.style.display = "flex"; }
+    if (stopBtn) { stopBtn.style.display = "none"; stopBtn.disabled = true; }
+  }
 }
 
 // 渲染历史消息（统一函数，避免重复逻辑）
@@ -2260,37 +2353,78 @@ function initApp() {
   preloadData();
   loadRecentSessions();
   setInterval(loadRecentSessions, 30000);
+  // 心跳：每 5s 清理已结束但状态未更新的会话
+  setInterval(_heartbeat, 5000);
 }
 
-// 加载会话列表——从 DB status 字段区分"进行中的会话"和"历史会话"
+// 心跳：检查 _workingSessionIds 中是否有会话已不在 _abortControllers 中（SSE 已结束）
+function _heartbeat() {
+  if (_workingSessionIds.size === 0) return;
+  let changed = false;
+  for (const uid of [..._workingSessionIds]) {
+    if (!_abortControllers[uid]) {
+      // SSE 已结束但 working 状态未清理
+      _workingSessionIds.delete(uid);
+      changed = true;
+    }
+  }
+  if (changed) _renderActiveSessions();
+}
+
+// 解析时间字符串为时间戳（支持 "2024-01-01 12:00:00" 等格式）
+function _parseTime(t) {
+  if (!t) return 0;
+  if (typeof t === "number") return t;
+  const d = new Date(t.replace(/-/g, "/"));
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
+// 清洗会话摘要：去除数据源/知识库等附加信息，只保留用户提问内容
+function _cleanSummary(summary) {
+  if (!summary) return "";
+  let s = String(summary).trim();
+  // 去除常见的附加信息模式：
+  // "数据源: xxx | 知识库: yyy | 问题内容" → "问题内容"
+  // "【数据源:xxx】问题内容" → "问题内容"
+  // "数据库:xxx 知识库:yyy 问题内容" → "问题内容"
+  s = s.replace(/^【[^】]*】\s*/, "");
+  s = s.replace(/^数据源[:：]\s*\S+\s*[|｜]\s*/i, "");
+  s = s.replace(/^知识库[:：]\s*\S+\s*[|｜]\s*/i, "");
+  s = s.replace(/^[|｜]\s*数据源[:：]\s*\S+\s*[|｜]\s*/i, "");
+  s = s.replace(/^[|｜]\s*知识库[:：]\s*\S+\s*[|｜]\s*/i, "");
+  // 去除前缀中的 "数据源:xxx" "知识库:yyy" 等
+  const parts = s.split(/[|｜]/).map(p => p.trim());
+  const filtered = parts.filter(p => {
+    if (/^(数据源|数据库|知识库|knowledge|datasource|data\s*source)[:：]/i.test(p)) return false;
+    if (/^(技能|skill)[:：]/i.test(p)) return false;
+    if (/^(连接器|connector)[:：]/i.test(p)) return false;
+    return true;
+  });
+  s = filtered.join(" ").trim();
+  if (!s) s = String(summary).trim();
+  return s;
+}
+
+// 加载会话列表——"进行中"由 _workingSessionIds 驱动，"最近会话"由后端 inactive 列表驱动
 async function loadRecentSessions() {
   try {
     const data = await api("GET", "/conversations/list");
     let convs = data.conversations || [];
     if (!Array.isArray(convs)) convs = convs.data || [];
 
-    // 按状态分组
-    const activeConvs = convs.filter(c => c.status === "active");
-    const inactiveConvs = convs.filter(c => c.status !== "active").slice(0, 5);
+    // 只渲染"最近会话"（status != active 且不在进行中列表），按最后消息时间排序取前 5
+    const inactiveConvs = convs.filter(c => c.status !== "active" && !_workingSessionIds.has(c.conv_uid))
+      .sort((a, b) => {
+        const ta = _parseTime(a.last_message_time) || _parseTime(a.gmt_created) || 0;
+        const tb = _parseTime(b.last_message_time) || _parseTime(b.gmt_created) || 0;
+        return tb - ta;
+      })
+      .slice(0, 5);
 
-    // 渲染"进行中的会话"
-    const activeContainer = document.getElementById("active-session-list");
-    const activeWrapper = document.getElementById("sidebar-active-sessions");
-    if (activeContainer && activeWrapper) {
-      if (activeConvs.length === 0) {
-        activeWrapper.style.display = "none";
-      } else {
-        activeWrapper.style.display = "block";
-        activeContainer.innerHTML = activeConvs.map(c => {
-          const uid = c.conv_uid || "";
-          const summary = c.summary || c.title || uid.slice(0, 12);
-          const truncated = summary.length > 20 ? summary.slice(0, 20) + "…" : summary;
-          return `<div class="recent-session-item" onclick="resumeConversation('${uid}')" title="${escapeHtml(summary)}" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><span style="color:var(--teal)">●</span> ${escapeHtml(truncated)}</div>`;
-        }).join("");
-      }
-    }
+    // "进行中"区域完全由 _workingSessionIds 驱动（不依赖后端 status）
+    _renderActiveSessions();
 
-    // 渲染"最近会话"（已结束的）
+    // 渲染"最近会话"
     const recentContainer = document.getElementById("recent-session-list");
     const recentWrapper = document.getElementById("sidebar-recent-sessions");
     if (!recentContainer || !recentWrapper) return;
@@ -2298,9 +2432,15 @@ async function loadRecentSessions() {
     recentWrapper.style.display = "block";
     recentContainer.innerHTML = inactiveConvs.map(c => {
       const uid = c.conv_uid || "";
-      const summary = c.summary || c.title || uid.slice(0, 12);
-      const truncated = summary.length > 20 ? summary.slice(0, 20) + "…" : summary;
-      return `<div class="recent-session-item" onclick="resumeConversation('${uid}')" title="${escapeHtml(summary)}" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(truncated)}</div>`;
+      const rawSummary = c.summary || c.title || uid.slice(0, 12);
+      const summary = _cleanSummary(rawSummary);
+      const truncated = summary.length > 20 ? summary.slice(0, 20) + "\u2026" : summary;
+      // ★ 用 _currentViewingConvUid 而非 _currentActiveConvUid 判断高亮
+      const isSelected = uid === _currentViewingConvUid;
+      const isPinned = _pinnedSessionIds.includes(uid);
+      return `<div class="recent-session-item" onclick="resumeConversation('${uid}')" title="${escapeHtml(summary)}" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${isSelected ? "background:var(--accent-dim);color:var(--accent);" : ""}">
+      ${isPinned ? '<i class="fa-solid fa-thumbtack" style="margin-right:4px;color:var(--amber);font-size:10px;"></i>' : ''}${escapeHtml(truncated)}
+    </div>`;
     }).join("");
   } catch {}
 }
@@ -2311,28 +2451,147 @@ async function loadRecentSessions() {
 let _currentAppCode = null;
 let _currentAppConfig = null;  // {database_name, knowledge_space, model, recommend_questions}
 let _currentConvUid = null;    // 当前会话 ID
-let _abortController = null;   // 用于停止正在进行的请求
-let _activeSessions = [];      // 活跃会话列表 [{convUid, appCode, appConfig, html, state, scrollTop, isStreaming}]
-let _currentActiveIdx = -1;    // 当前显示的是 _activeSessions 的哪个 index
+let _abortControllers = {};     // convUid → AbortController，支持多会话并行 SSE
+let _sessionStateMap = new Map(); // convUid → {state, appCode, appConfig, scrollTop}
+let _workingSessionIds = new Set(); // 运行中的会话 ID 集合
+let _pinnedSessionIds = [];    // 置顶会话 ID 列表
+let _currentActiveConvUid = null; // 当前显示的活跃会话 convUid（用于"进行中"高亮）
+let _currentViewingConvUid = null; // 当前正在查看的会话 convUid（用于"最近会话"高亮，跨两个列表）
+
+// === Parking Lot 容器（隐藏 DOM，存放切走的会话消息节点） ===
+let _parkingLot = null;
+function _getParkingLot() {
+  if (!_parkingLot) {
+    _parkingLot = document.createElement("div");
+    _parkingLot.id = "chat-parking-lot";
+    _parkingLot.style.display = "none";
+    document.body.appendChild(_parkingLot);
+  }
+  return _parkingLot;
+}
+
+// 获取当前会话的 AbortController（不存在则新建）
+function _getAbortController() {
+  const key = _currentConvUid || State.currentSessionId || "_default";
+  if (!_abortControllers[key]) {
+    _abortControllers[key] = new AbortController();
+  }
+  return _abortControllers[key];
+}
+
+// 获取当前会话的 AbortController 的 signal
+function _currentSignal() {
+  return _getAbortController().signal;
+}
+
+// 创建/获取会话状态缓存
+function _ensureSessionState(convUid) {
+  if (!convUid) return null;
+  if (!_sessionStateMap.has(convUid)) {
+    _sessionStateMap.set(convUid, {
+      convUid,
+      state: {
+        currentSessionId: "",
+        selectedDatasource: "",
+        selectedKnowledge: "",
+        selectedSkill: "",
+        selectedConnectors: [],
+        attachedFiles: [],
+      },
+      appCode: null,
+      appConfig: null,
+      scrollTop: 0,
+    });
+  }
+  return _sessionStateMap.get(convUid);
+}
+
+// 设置会话工作状态
+function _setSessionWorking(convUid, working) {
+  if (!convUid) return;
+  if (working) {
+    _workingSessionIds.add(convUid);
+  } else {
+    _workingSessionIds.delete(convUid);
+  }
+}
+
+// === Parking Lot 核心：把当前 chat-messages 的子节点移到 parking 容器 ===
+function _parkCurrentSession() {
+  const convUid = _currentConvUid || State.currentSessionId;
+  if (!convUid) return;
+  const chatContainer = document.getElementById("chat-messages");
+  if (!chatContainer || chatContainer.children.length === 0) return;
+
+  // 为该会话创建一个专属 parking slot（如果不存在）
+  let slot = _getParkingLot().querySelector(`[data-park-for="${convUid}"]`);
+  if (!slot) {
+    slot = document.createElement("div");
+    slot.setAttribute("data-park-for", convUid);
+    _getParkingLot().appendChild(slot);
+  }
+  // 移动所有子节点到 parking slot（DOM 移动，不销毁，SSE 回调引用仍有效）
+  while (chatContainer.firstChild) {
+    slot.appendChild(chatContainer.firstChild);
+  }
+  // 保存 scrollTop
+  const st = _sessionStateMap.get(convUid);
+  if (st) st.scrollTop = chatContainer.scrollTop;
+}
+
+// === Parking Lot 恢复：把 parking slot 的节点移回 chat-messages ===
+function _unparkSession(convUid) {
+  const chatContainer = document.getElementById("chat-messages");
+  if (!chatContainer) return;
+  // 先清空当前容器（但不清 parking — 有可能是新建空白）
+  chatContainer.innerHTML = "";
+  const slot = _getParkingLot().querySelector(`[data-park-for="${convUid}"]`);
+  if (slot) {
+    while (slot.firstChild) {
+      chatContainer.appendChild(slot.firstChild);
+    }
+    slot.remove();
+  }
+  const st = _sessionStateMap.get(convUid);
+  if (st) chatContainer.scrollTop = st.scrollTop || 0;
+}
+
+// === 移除会话的 parking slot ===
+function _removeParkingSlot(convUid) {
+  const slot = _getParkingLot().querySelector(`[data-park-for="${convUid}"]`);
+  if (slot) slot.remove();
+}
+
+// === 清理 parking lot 中已无缓存且非运行中的会话 ===
+function _cleanupParking() {
+  const slots = _getParkingLot().querySelectorAll("[data-park-for]");
+  slots.forEach(slot => {
+    const uid = slot.getAttribute("data-park-for");
+    if (!_sessionStateMap.has(uid) && !_workingSessionIds.has(uid)) {
+      slot.remove();
+    }
+  });
+}
 
 // ==========================================================================
 // 活跃会话管理（侧边栏"进行中的会话"）
 // ==========================================================================
 
-// 保存当前对话为活跃会话快照（在 sendQuestion 完成、navigate 切走、newChatSession 时调用）
+// 保存当前对话到状态缓存 + parking lot
 function _saveActiveSession() {
   const chatContainer = document.getElementById("chat-messages");
   const isChatVisible = document.getElementById("ask-chat")?.style.display === "flex";
   const convUid = _currentConvUid || State.currentSessionId;
-  // 只有在对话界面 + 有会话ID + 有消息时才保存
-  if (!isChatVisible || !convUid || !chatContainer || !chatContainer.innerHTML.trim()) return;
+  if (!isChatVisible || !convUid || !chatContainer) return;
 
+  // 用 Parking Lot 移动 DOM 节点（不序列化为字符串）
+  _parkCurrentSession();
+
+  // 保存状态快照
   const snapshot = {
     convUid,
     appCode: _currentAppCode,
     appConfig: _currentAppConfig,
-    html: chatContainer.innerHTML,
-    scrollTop: chatContainer.scrollTop,
     state: {
       currentSessionId: State.currentSessionId,
       selectedDatasource: State.selectedDatasource,
@@ -2341,61 +2600,62 @@ function _saveActiveSession() {
       selectedConnectors: [...State.selectedConnectors],
       attachedFiles: [...State.attachedFiles],
     },
-    isStreaming: !!_abortController,
-    timestamp: Date.now(),
   };
-
-  // 如果该 convUid 已在列表中，更新；否则新增
-  const existingIdx = _activeSessions.findIndex(s => s.convUid === convUid);
-  if (existingIdx >= 0) {
-    _activeSessions[existingIdx] = snapshot;
-    _currentActiveIdx = existingIdx;
-  } else {
-    _activeSessions.push(snapshot);
-    _currentActiveIdx = _activeSessions.length - 1;
-  }
+  const existing = _sessionStateMap.get(convUid) || {};
+  _sessionStateMap.set(convUid, Object.assign(existing, snapshot));
+  _currentActiveConvUid = convUid;
   _renderActiveSessions();
 }
 
-// 渲染侧边栏"进行中的会话"列表
+// 渲染侧边栏分组列表
 function _renderActiveSessions() {
-  const container = document.getElementById("active-session-list");
-  const wrapper = document.getElementById("sidebar-active-sessions");
-  if (!container || !wrapper) return;
-  if (_activeSessions.length === 0) {
-    wrapper.style.display = "none";
-    return;
-  }
-  wrapper.style.display = "block";
-  container.innerHTML = _activeSessions.map((s, i) => {
-    // 摘要：从快照 HTML 中提取第一条 user 消息
-    let summary = s.convUid.slice(0, 12);
-    try {
-      const tmp = document.createElement("div");
-      tmp.innerHTML = s.html;
-      const firstUser = tmp.querySelector(".msg-user .msg-text");
-      if (firstUser) summary = firstUser.textContent.slice(0, 25);
-    } catch {}
-    const truncated = summary.length > 20 ? summary.slice(0, 20) + "…" : summary;
-    const isActive = i === _currentActiveIdx;
-    return `<div class="active-session-item" onclick="switchToActiveSession(${i})" title="${escapeHtml(summary)}" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${isActive ? "background:var(--accent-dim);color:var(--accent);" : ""}">
-      ${s.isStreaming ? '<span style="color:var(--teal)">●</span> ' : ''}${escapeHtml(truncated)}
-      <i class="fa-solid fa-xmark" onclick="closeActiveSession(${i}, event)" style="float:right;color:var(--text-tertiary);cursor:pointer;font-size:11px;margin-left:4px;" title="关闭"></i>
+  const activeContainer = document.getElementById("active-session-list");
+  const activeWrapper = document.getElementById("sidebar-active-sessions");
+  if (activeContainer && activeWrapper) {
+    const workingUids = [..._workingSessionIds];
+    if (workingUids.length === 0) {
+      activeWrapper.style.display = "none";
+    } else {
+      activeWrapper.style.display = "block";
+      activeContainer.innerHTML = workingUids.map(uid => {
+        const s = _sessionStateMap.get(uid);
+        let summary = uid.slice(0, 12);
+        // 从 parking slot 中提取第一条用户消息作为摘要
+        try {
+          const slot = _getParkingLot().querySelector(`[data-park-for="${uid}"]`);
+          const chatEl = slot || document.getElementById("chat-messages");
+          if (chatEl) {
+            const firstUser = chatEl.querySelector(".msg-user .msg-text");
+            if (firstUser) summary = firstUser.textContent.slice(0, 25);
+          }
+        } catch {}
+        summary = _cleanSummary(summary);
+        const truncated = summary.length > 20 ? summary.slice(0, 20) + "\u2026" : summary;
+        const isActive = uid === _currentViewingConvUid;
+        return `<div class="active-session-item" onclick="switchToActiveSession('${uid}')" title="${escapeHtml(summary)}" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${isActive ? "background:var(--accent-dim);color:var(--accent);" : ""}">
+      <span style="color:var(--teal)">\u25CF</span> ${escapeHtml(truncated)}
+      <i class="fa-solid fa-xmark" onclick="closeActiveSession('${uid}', event)" style="float:right;color:var(--text-tertiary);cursor:pointer;font-size:11px;margin-left:4px;" title="关闭"></i>
     </div>`;
-  }).join("");
+      }).join("");
+    }
+  }
 }
 
-// 切换到指定活跃会话
-function switchToActiveSession(idx) {
-  if (idx < 0 || idx >= _activeSessions.length) return;
-  const s = _activeSessions[idx];
+// 切换到指定活跃会话（按 convUid）
+function switchToActiveSession(convUid) {
+  const s = _sessionStateMap.get(convUid);
+  if (!s) {
+    // 缓存未命中，从后端恢复
+    resumeConversation(convUid);
+    return;
+  }
 
-  // 先保存当前会话（如果有的话）
-  if (_currentActiveIdx >= 0 && _currentActiveIdx !== idx) {
+  // 先保存当前会话（parking 移走 DOM 节点）
+  if (_currentActiveConvUid && _currentActiveConvUid !== convUid) {
     _saveActiveSession();
   }
 
-  // 恢复目标会话
+  // 恢复目标会话状态
   _currentAppCode = s.appCode;
   _currentAppConfig = s.appConfig;
   _currentConvUid = s.convUid;
@@ -2406,15 +2666,11 @@ function switchToActiveSession(idx) {
   State.selectedConnectors = s.state.selectedConnectors || [];
   State.attachedFiles = s.state.attachedFiles || [];
 
-  _currentActiveIdx = idx;
-
-  // 恢复 UI
+  _currentActiveConvUid = convUid;
+  _currentViewingConvUid = convUid; // ★ 用于跨列表高亮
   _switchToAskPage();
-  const chatContainer = document.getElementById("chat-messages");
-  if (chatContainer) {
-    chatContainer.innerHTML = s.html;
-    chatContainer.scrollTop = s.scrollTop;
-  }
+  _unparkSession(convUid);
+
   // 恢复工具栏
   if (_currentAppCode && _currentAppConfig) {
     lockAppToolbar(_currentAppConfig.resources || {});
@@ -2432,24 +2688,34 @@ function switchToActiveSession(idx) {
   updateChatContextDisplay();
   scrollChatBottom();
   _renderActiveSessions();
+  loadRecentSessions(); // ★ 刷新"最近会话"列表高亮
+
+  // 根据 AbortController 是否存在决定终止/发送按钮
+  const isStreaming = !!_abortControllers[convUid];
+  _updateSendStopButtons(isStreaming);
 }
 
-// 关闭活跃会话（从列表移除）
-function closeActiveSession(idx, event) {
+// 关闭活跃会话（从缓存移除 + 清理 parking）
+function closeActiveSession(convUid, event) {
   if (event) event.stopPropagation();
-  if (idx < 0 || idx >= _activeSessions.length) return;
-  const wasCurrent = idx === _currentActiveIdx;
-  _activeSessions.splice(idx, 1);
-  // 调整 _currentActiveIdx
-  if (idx < _currentActiveIdx) {
-    _currentActiveIdx--;
-  } else if (idx === _currentActiveIdx) {
-    _currentActiveIdx = -1;
+  if (!convUid || !_sessionStateMap.has(convUid)) return;
+  const wasCurrent = convUid === _currentActiveConvUid;
+
+  // 中止该会话的 SSE（如果在运行）
+  if (_abortControllers[convUid]) {
+    _abortControllers[convUid].abort();
+    delete _abortControllers[convUid];
   }
+  _sessionStateMap.delete(convUid);
+  _workingSessionIds.delete(convUid);
+  _removeParkingSlot(convUid);
+  _pinnedSessionIds = _pinnedSessionIds.filter(id => id !== convUid);
+
   if (wasCurrent) {
-    // 如果关闭的是当前会话，切到另一个或回空白首页
-    if (_activeSessions.length > 0) {
-      switchToActiveSession(Math.min(idx, _activeSessions.length - 1));
+    _currentActiveConvUid = null;
+    _currentViewingConvUid = null;
+    if (_workingSessionIds.size > 0) {
+      switchToActiveSession([..._workingSessionIds][0]);
     } else {
       navigate("ask");
     }
@@ -2679,22 +2945,30 @@ async function submitEditAppConfig(appCode) {
   } catch (e) { toast("修改失败: " + e.message, "error"); }
 }
 
-// 进入应用对话模式
+// 进入应用对话模式 —— 与点击"智能问答"逻辑一致，只是带上数据源/知识库
 async function enterAppChat(appCode, appName) {
-  _currentAppCode = appCode;
-  _currentConvUid = null; // 新会话
+  // 先保存当前活跃会话（parking 移走 DOM）
+  _saveActiveSession();
+  _currentConvUid = null; // 新会话，等用户输入第一个问题后才创建
+  let appConfig = null;
   let res = {};
   try {
     const data = await api("GET", `/apps/${appCode}`);
-    _currentAppConfig = data.app;
-    res = _currentAppConfig.resources || {};
-    // 锁定数据源和知识库
-    if (res.database_name) State.selectedDatasource = res.database_name;
-    if (res.knowledge_space) State.selectedKnowledge = res.knowledge_space;
-  } catch (e) {
-    _currentAppConfig = null;
-  }
-  // 切换到问答页（不走 navigate 避免触发 exitAppChat）
+    appConfig = data.app;
+    res = appConfig.resources || {};
+  } catch (e) {}
+  // ★ 从应用进入：直接显示聊天界面（不走 navigate("ask")，因为那样会显示空白欢迎页）
+  State.currentSessionId = "";
+  _currentConvUid = null;
+  _currentActiveConvUid = null;
+  _currentViewingConvUid = null;
+  State.selectedDatasource = "";
+  State.selectedKnowledge = "";
+  State.selectedSkill = "";
+  State.selectedConnectors = [];
+  State.attachedFiles = [];
+  State.chatHistory = [];
+  // 切换到问答页面
   State.currentPage = "ask";
   document.querySelectorAll(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.page === "ask"));
   document.getElementById("topbar-title").textContent = PAGES.ask.title;
@@ -2702,27 +2976,39 @@ async function enterAppChat(appCode, appName) {
   document.querySelectorAll(".page-content").forEach(el => el.classList.add("content-hidden"));
   const askPage = document.getElementById("page-ask");
   if (askPage) askPage.classList.remove("content-hidden");
-  const welcome = document.getElementById("ask-welcome");
-  const chat = document.getElementById("ask-chat");
-  if (welcome) welcome.style.display = "none";
-  if (chat) chat.style.display = "flex";
-  // 自动创建新会话
-  await newAppSession();
-  // 应用模式下禁用数据源/知识库按钮（已锁定不可改）
+  // ★ 直接显示聊天界面（不是欢迎页）
+  document.getElementById("ask-welcome").style.display = "none";
+  document.getElementById("ask-chat").style.display = "flex";
+  document.getElementById("chat-messages").innerHTML = "";
+  document.getElementById("chat-mode-info").textContent = `模式: ${getModeLabel()}`;
+  // 清空输入框
+  const chatInput = document.getElementById("chat-input");
+  if (chatInput) { chatInput.value = ""; chatInput.style.height = "auto"; }
+  const heroInput = document.getElementById("hero-input");
+  if (heroInput) { heroInput.value = ""; heroInput.style.height = "auto"; }
+  // 设置应用模式
+  _currentAppCode = appCode;
+  _currentAppConfig = appConfig;
+  if (res.database_name) State.selectedDatasource = res.database_name;
+  if (res.knowledge_space) State.selectedKnowledge = res.knowledge_space;
+  // 应用模式下锁定数据源/知识库按钮（不可改）
   lockAppToolbar(res);
-  // 显示应用指示器和对话模式工具栏
+  updateChatContextDisplay();
+  // 显示应用指示器
   const indicator = document.getElementById("app-indicator");
-  if (indicator && _currentAppConfig) {
-    const res = _currentAppConfig.resources || {};
-    const parts = [`📦 ${_currentAppConfig.app_name}`];
-    if (res.database_name) parts.push(`📊 ${res.database_name} (已锁定)`);
-    if (res.knowledge_space) parts.push(`📚 ${res.knowledge_space} (已锁定)`);
+  if (indicator && appConfig) {
+    const res2 = appConfig.resources || {};
+    const parts = [`📦 ${appConfig.app_name}`];
+    if (res2.database_name) parts.push(`📊 ${res2.database_name} (已锁定)`);
+    if (res2.knowledge_space) parts.push(`📚 ${res2.knowledge_space} (已锁定)`);
     indicator.innerHTML = parts.join(" | ") +
       ` <button class="btn btn-sm" style="margin-left:8px" onclick="newAppSession()">新建会话</button>` +
       ` <button class="btn btn-sm" onclick="showAppHistory()">历史会话</button>` +
       ` <button class="btn btn-sm" onclick="exitAppChat()">退出应用</button>`;
     indicator.style.display = "block";
   }
+  syncToolLabels();
+  _renderActiveSessions();
   toast(`已进入应用: ${appName}，数据源/知识库已锁定`, "info");
 }
 
@@ -2731,7 +3017,8 @@ function exitAppChat() {
   _currentAppConfig = null;
   _currentConvUid = null;
   State.currentSessionId = "";
-  _currentActiveIdx = -1;  // 清除活跃会话索引
+  _currentActiveConvUid = null;  // 清除活跃会话索引
+  _currentViewingConvUid = null;
   // 清理 State 中应用锁定的选择
   State.selectedDatasource = "";
   State.selectedKnowledge = "";
@@ -2743,6 +3030,11 @@ function exitAppChat() {
   if (welcome) welcome.style.display = "flex";
   if (chat) chat.style.display = "none";
   document.getElementById("chat-messages").innerHTML = "";
+  // ★ 清空输入框
+  const chatInput = document.getElementById("chat-input");
+  if (chatInput) { chatInput.value = ""; chatInput.style.height = "auto"; }
+  const heroInput = document.getElementById("hero-input");
+  if (heroInput) { heroInput.value = ""; heroInput.style.height = "auto"; }
   // 恢复工具栏按钮可点击
   ["chat-tool-db", "chat-tool-kb"].forEach(id => {
     const btn = document.getElementById(id);
@@ -2775,6 +3067,11 @@ async function newAppSession() {
   // 清空对话区，留在对话界面
   const container = document.getElementById("chat-messages");
   if (container) container.innerHTML = "";
+  // ★ 清空输入框
+  const chatInput = document.getElementById("chat-input");
+  if (chatInput) { chatInput.value = ""; chatInput.style.height = "auto"; }
+  const heroInput = document.getElementById("hero-input");
+  if (heroInput) { heroInput.value = ""; heroInput.style.height = "auto"; }
   toast("已新建会话", "success");
 }
 
@@ -2792,7 +3089,7 @@ async function showAppHistory() {
         <thead><tr><th>会话摘要</th><th>时间</th><th>操作</th></tr></thead>
         <tbody>
           ${sessions.map(s => `<tr>
-            <td>${escapeHtml(s.summary || s.conv_uid)}</td>
+            <td>${escapeHtml(_cleanSummary(s.summary) || s.conv_uid)}</td>
             <td>${escapeHtml(s.gmt_created || "")}</td>
             <td><button class="btn btn-sm" onclick="resumeAppSession('${s.conv_uid}','${escapeAttr(s.summary || "")}')">恢复</button></td>
           </tr>`).join("")}
@@ -2840,8 +3137,32 @@ async function resumeAppSession(convUid, summary) {
     lockAppToolbar({ database_name: dbName, knowledge_space: kbName, lockAlways: true });
     syncToolLabels();
 
+    // 根据后端实时 status 切换终止/发送按钮
+    const convStatus = binding.status || "inactive";
+    _updateSendStopButtons(convStatus === "active");
+
     // 渲染消息（统一函数）
     _renderHistoryMessages(msgs);
+
+    // 注册到状态缓存
+    _ensureSessionState(convUid);
+    _currentActiveConvUid = convUid;
+    _currentViewingConvUid = convUid;
+    const st = _sessionStateMap.get(convUid);
+    if (st) {
+      st.appCode = _currentAppCode;
+      st.appConfig = _currentAppConfig;
+      st.state = {
+        currentSessionId: State.currentSessionId,
+        selectedDatasource: State.selectedDatasource,
+        selectedKnowledge: State.selectedKnowledge,
+        selectedSkill: State.selectedSkill,
+        selectedConnectors: [...State.selectedConnectors],
+        attachedFiles: [...State.attachedFiles],
+      };
+    }
+    _renderActiveSessions();
+    loadRecentSessions(); // ★ 刷新"最近会话"列表高亮
   } catch (e) { toast("加载历史消息失败: " + e.message, "error"); }
 }
 
