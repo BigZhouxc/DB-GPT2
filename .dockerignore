@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.venv/
+venv/
+*.md
+# 排除 dbgpt 源码包中的 tests 和 .git
+dbgpt-core-pkg/tests/
+dbgpt-core-pkg/.git/
+dbgpt-ext-pkg/tests/
+dbgpt-ext-pkg/.git/

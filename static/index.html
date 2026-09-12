@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="pVbMItHHwMj58O3cFTqgrh">
+<head data-page-node-id="lNEKSU67izaglCZ5nti1IF">
+  <meta charset="UTF-8" data-page-node-id="bD1UEGLekDjjXKg7OEC5ue">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="81b2QHVyO9qK5kmSNIKcxu">
+  <title>智能问数 Agent</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260913a" data-page-node-id="pHESI1O04YyjLSkiGCcMB0">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.1/css/all.min.css" data-page-node-id="zmvBXDYdCr8s8LOS1FCqCW">
+</head>
+<body data-page-node-id="TL6Nuexe92hzT8qgd406p5">
+<div class="app-layout" data-page-node-id="35Pl35HKvsdHNjnHqAwAtx">
+
+  <!-- ===== 侧边栏 ===== -->
+  <aside class="sidebar" id="sidebar" data-page-node-id="2wlxtxBDvJ2xErQeoMbsnC">
+    <div class="sidebar-header" data-page-node-id="kxTfDW8sN1KnYYDtpiEhry">
+      <div class="sidebar-logo" data-page-node-id="uVBqgs95k8aNMW8XJK0uVE">问</div>
+      <span class="sidebar-title" data-page-node-id="CVPBU5FYpSBOEv391UanXk">智能问数</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()" title="折叠/展开" data-page-node-id="DRwZ0jIwk2dB0Jb6NaRnD9">
+        <i class="fa-solid fa-bars" data-page-node-id="JIaQhxBI7eIhstuT8HaHuE"></i>
+      </button>
+    </div>
+
+    <nav class="sidebar-nav" data-page-node-id="9YdmCytpJePgrgnw1IWQ7s">
+      <div class="nav-section" data-page-node-id="rAFcpZr1SPQ8ZvBGuPgEOt">
+        <div class="nav-section-title" data-page-node-id="9MkHAZQzlNFJspx4BTTfV3">核心功能</div>
+        <div class="nav-item active" data-page="ask" onclick="navigate('ask')" data-page-node-id="fpQ65SX8PSFKbpwcNEnmBC">
+          <span class="nav-icon" data-page-node-id="2XTHo1vYJIoartmAkHrB1z"><i class="fa-solid fa-comments" data-page-node-id="SwAFIgydfJtbtBbBKqmscv"></i></span>
+          <span class="nav-label" data-page-node-id="pKOqlvKvYygLzC6m9EECEZ">智能问答</span>
+        </div>
+        <div class="nav-item" data-page="apps" onclick="navigate('apps')">
+          <span class="nav-icon"><i class="fa-solid fa-cube"></i></span>
+          <span class="nav-label">应用</span>
+        </div>
+      </div>
+
+      <div class="nav-section" data-page-node-id="HTvG7e6uaY3JX0p625m2cf">
+        <div class="nav-section-title" data-page-node-id="kcXn0WvklWGOyVCiC4GHvF">数据管理</div>
+        <div class="nav-item" data-page="datasources" onclick="navigate('datasources')" data-page-node-id="IqRvcf7KhYdmZWFxWZovdN">
+          <span class="nav-icon" data-page-node-id="1DdCoRXFwvNL5YBaUAmoSp"><i class="fa-solid fa-database" data-page-node-id="rE7KSs795wFj5VV6mB6i9n"></i></span>
+          <span class="nav-label" data-page-node-id="Zi5tCEawpqOdy2rmqxlL9Q">数据源</span>
+          <span class="nav-badge" id="badge-ds" data-page-node-id="l5qVGDeAkHT1FWCoXV9CvF"></span>
+        </div>
+        <div class="nav-item" data-page="knowledge" onclick="navigate('knowledge')" data-page-node-id="qHnrdJQlHZl8kjDIQaUnUg">
+          <span class="nav-icon" data-page-node-id="uSlPMJrlhz9KIX0VKoRfum"><i class="fa-solid fa-book" data-page-node-id="4iaelSX5zZHiWh1IZZgRUj"></i></span>
+          <span class="nav-label" data-page-node-id="oo1K0Lf3kDqoPCCxY3nesC">知识库</span>
+        </div>
+        <div class="nav-item" data-page="connectors" onclick="navigate('connectors')" data-page-node-id="AXX8zhdorJYwZ4ek6SlNEn">
+          <span class="nav-icon" data-page-node-id="PX8gsTKXlIFBWJdmFC2tLH"><i class="fa-solid fa-plug" data-page-node-id="gry4xGg1RCvzajfIRxjktZ"></i></span>
+          <span class="nav-label" data-page-node-id="XFFOjGLFRi53Fev92lYCtN">连接器</span>
+        </div>
+      </div>
+
+      <div class="nav-section" data-page-node-id="rDDF2S5G3PwGVHvuJmHPv0">
+        <div class="nav-section-title" data-page-node-id="uPnpEM7TqfaH2521JhwMgf">AI 资源</div>
+        <div class="nav-item" data-page="skills" onclick="navigate('skills')">
+          <span class="nav-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+          <span class="nav-label">技能</span>
+        </div>
+        <div class="nav-item" data-page="prompts" onclick="navigate('prompts')">
+          <span class="nav-icon"><i class="fa-solid fa-pen-nib"></i></span>
+          <span class="nav-label">提示词</span>
+        </div>
+        <div class="nav-item" data-page="models" onclick="navigate('models')" data-page-node-id="PRLKuioDs7motmAXepHsQk">
+          <span class="nav-icon" data-page-node-id="7AceB1DwSMtXoJ6rJJduFV"><i class="fa-solid fa-brain" data-page-node-id="6tHma0sk88Wr5fgveRxPgH"></i></span>
+          <span class="nav-label" data-page-node-id="xnXPPI7rMlcCfgLd0BS3j2">模型</span>
+        </div>
+        <div class="nav-item" data-page="conversations" onclick="navigate('conversations')" data-page-node-id="SWDlLtQ0SiXdGynNx2E76o">
+          <span class="nav-icon" data-page-node-id="jBWUWO1F595ovym44cMmGw"><i class="fa-solid fa-clock-rotate-left" data-page-node-id="X4IXw3T3MK41qip9KvIHWN"></i></span>
+          <span class="nav-label" data-page-node-id="hFwRX4He39lysJ8wHRIApK">会话历史</span>
+        </div>
+      </div>
+    </nav>
+
+    <!-- 进行中的会话（活跃会话，点击切回） -->
+    <div id="sidebar-active-sessions" style="padding:8px 12px;border-top:1px solid var(--border-color);max-height:200px;overflow-y:auto;display:none;">
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;font-weight:600;">进行中的会话</div>
+      <div id="active-session-list"></div>
+    </div>
+
+    <!-- 最近会话（最近5条） -->
+    <div id="sidebar-recent-sessions" style="padding:8px 12px;border-top:1px solid var(--border-color);max-height:260px;overflow-y:auto;display:none;">
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;font-weight:600;">最近会话</div>
+      <div id="recent-session-list"></div>
+    </div>
+
+    <div class="sidebar-footer" data-page-node-id="Vd5KSLjacoQVZyrRXYxEvE">
+      <span class="status-dot" data-page-node-id="D59yyQy4MBnYRlwQY3lTdb"></span>服务检查中...
+    </div>
+  </aside>
+
+  <!-- ===== 主区域 ===== -->
+  <main class="main-area" data-page-node-id="NxL2WRKTDttVN5iseaxyQf">
+    <header class="topbar" data-page-node-id="77wTb37RIFHBI3uLrVYGAb">
+      <div data-page-node-id="4G7WjlHO3RzUj6BHA8ia6H">
+        <div class="topbar-title" id="topbar-title" data-page-node-id="HemVxUDUeOqMq7HelilchF">智能问答</div>
+        <div class="topbar-subtitle" id="topbar-subtitle" data-page-node-id="ehItPgHH02IDpKUMXqKr4X">统一问答入口 — 数据对话 / 知识库 / 纯对话</div>
+      </div>
+      <div class="topbar-spacer" data-page-node-id="0pFKE6xirXO0meQ5IiW35p"></div>
+      <a class="topbar-action" href="/docs" target="_blank" data-page-node-id="SzHzzHY19kPineWKPMQq9R">
+        <i class="fa-solid fa-code" data-page-node-id="RzHyi4cPl1lBPgzJgOjduz"></i> API Docs
+      </a>
+    </header>
+
+    <div class="content-area" data-page-node-id="lDYG2rt39A5PmVdCnLTTIe">
+
+      <!-- ===== 问答页 ===== -->
+      <div class="page-content" id="page-ask" style="height:100%; display:flex; flex-direction:column;" data-page-node-id="19DxFEhLIXTfoSjKW7bnGX">
+
+        <!-- 欢迎页（无对话时显示） -->
+        <div id="ask-welcome" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:20px;" data-page-node-id="zD2wHVuhjXOegu5b5ihc9Y">
+          <div style="display:flex; align-items:center; gap:16px; margin-bottom:8px;" data-page-node-id="RvIvlDWEOn0La5cz8miMhR">
+            <div style="width:48px; height:48px; border-radius:12px; background:linear-gradient(135deg, var(--accent), var(--purple)); display:flex; align-items:center; justify-content:center; font-size:22px; font-weight:700; color:#fff; flex-shrink:0;" data-page-node-id="RNhABry7zrkIsWa6kL21tc">问</div>
+            <h1 style="font-size:28px; font-weight:600; color:var(--text-primary);" data-page-node-id="RlWQb3EqNhMM6fmt6hHPP1">智能问数 AI 助理</h1>
+          </div>
+          <p style="font-size:13px; color:var(--text-tertiary); letter-spacing:2px; margin-bottom:32px;" data-page-node-id="e2ch9zO03jCW8ptgbOB8no">Agentic Data Driven Decisions</p>
+
+          <!-- 卡片式输入框 -->
+          <div style="width:100%; max-width:780px; position:relative;" data-page-node-id="sbOAaTtsJdT8MyEBg6ianB">
+            <div id="app-indicator" style="display:none;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:var(--radius);padding:6px 12px;margin-bottom:8px;font-size:13px;color:var(--text-secondary)"></div>
+            <div class="hero-input-card" data-page-node-id="TijFHq9QmjaN6MJsBB3BFK">
+              <textarea id="hero-input" class="hero-textarea" placeholder="向您的数据库提问，或进行知识库问答..." rows="3" onkeydown="handleHeroKey(event)" oninput="autoResize(this)"></textarea>
+              <div class="hero-toolbar" data-page-node-id="fwgaeYu1uWmXZtVZpWMxL5">
+                <div class="hero-toolbar-left" data-page-node-id="f88rO5Staw34HCkfDwwunM">
+                  <button class="hero-tool-btn" id="tool-db" onclick="toggleToolMenu('db')" title="选择数据源" data-page-node-id="F8Cz6kvT5QIe4ebafefBqV">
+                    <i class="fa-solid fa-database" data-page-node-id="GYbhqQYGNwcNw4xJuLAuPi"></i>
+                    <span id="tool-db-label" data-page-node-id="As3MffA9J1JVB7xYhEomRV">数据源</span>
+                  </button>
+                  <button class="hero-tool-btn" id="tool-kb" onclick="toggleToolMenu('kb')" title="选择知识库" data-page-node-id="VFeLm0t4kB3eQ264FQnpP4">
+                    <i class="fa-solid fa-book" data-page-node-id="lEV0Pykgpj5eEsRVtOBkub"></i>
+                    <span id="tool-kb-label" data-page-node-id="EoABaVFL1lCdJMdH55bFE1">知识库</span>
+                  </button>
+                  <button class="hero-tool-btn" id="tool-skill" onclick="toggleToolMenu('skill')" title="选择技能">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    <span id="tool-skill-label">技能</span>
+                  </button>
+                  <button class="hero-tool-btn" id="tool-conn" onclick="toggleToolMenu('conn')" title="选择 MCP 连接器">
+                    <i class="fa-solid fa-plug"></i>
+                    <span id="tool-conn-label">连接器</span>
+                  </button>
+                  <button class="hero-tool-btn" id="tool-attach" onclick="document.getElementById('hero-file-input').click()" title="添加本地文件">
+                    <i class="fa-solid fa-paperclip"></i>
+                    <span id="tool-attach-label">文件</span>
+                  </button>
+                  <input type="file" id="hero-file-input" multiple style="display:none;" onchange="handleFileSelect(this)">
+                  <div class="hero-tool-select" data-page-node-id="yACSHXoq90SqqjHExcDdXF">
+                    <select id="hero-model" onchange="State.selectedModel=this.value" class="hero-model-select" data-page-node-id="nLtxAHgROl9MbBt1LP7MmJ">
+                      <option value="" data-page-node-id="H95ZCgT8IMGLVKguSkuJaf">默认模型</option>
+                    </select>
+                  </div>
+                </div>
+                <button class="hero-send-btn" id="hero-send" onclick="sendFromHero()" title="发送" data-page-node-id="sS8cw24VbT94sDvDeqJy7t">
+                  <i class="fa-solid fa-arrow-up" data-page-node-id="4Cv2rDG7H30VuJGtl6o0eY"></i>
+                </button>
+              </div>
+              <div class="attached-files" id="hero-attached-files" style="display:none;"></div>
+            </div>
+
+            <div class="tool-dropdown" id="dropdown-db" style="display:none;" data-page-node-id="m4VmVkZjifuhW4CjbuEqPt">
+              <div class="tool-dropdown-search" data-page-node-id="qvsbLQhtR5qZyvxFmlFJuJ"><input type="text" placeholder="搜索数据源..." oninput="filterDropdown('db', this.value)" data-page-node-id="7ZTCtAlItORcFoGiteFBVB"></div>
+              <div id="dropdown-db-list" data-page-node-id="Btkvk1oY0IbDfJlCJk3xKD"></div>
+            </div>
+            <div class="tool-dropdown" id="dropdown-kb" style="display:none;" data-page-node-id="Tfu7LHrE9RHreADFHhFBTo">
+              <div class="tool-dropdown-search" data-page-node-id="BpMjZhGCB75U9ZhDqJyUyf"><input type="text" placeholder="搜索知识库..." oninput="filterDropdown('kb', this.value)" data-page-node-id="uSbzh2iqN2gAqIERvSM0i8"></div>
+              <div id="dropdown-kb-list" data-page-node-id="M4Si3NI1ylmfFHGsBGDTML"></div>
+            </div>
+            <div class="tool-dropdown" id="dropdown-skill" style="display:none;">
+              <div class="tool-dropdown-search"><input type="text" placeholder="搜索技能..." oninput="filterDropdown('skill', this.value)"></div>
+              <div id="dropdown-skill-list"></div>
+            </div>
+            <div class="tool-dropdown" id="dropdown-conn" style="display:none;">
+              <div class="tool-dropdown-search"><input type="text" placeholder="搜索连接器..." oninput="filterDropdown('conn', this.value)"></div>
+              <div id="dropdown-conn-list"></div>
+            </div>
+          </div>
+
+          <!-- 推荐示例 -->
+          <div style="width:100%; max-width:780px; margin-top:28px;" data-page-node-id="7DMQWN9wl4XT3AVP4tUmF9">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;" data-page-node-id="hfjwC2jSowy3F7EgCVKZbX">
+              <div style="flex:1; height:1px; background:var(--border-color);" data-page-node-id="GpuDhFuoCWuHdGlG4XK2OL"></div>
+              <span style="font-size:11px; color:var(--text-tertiary); letter-spacing:1px; text-transform:uppercase;" data-page-node-id="5vZrTYwYrg3nNaOVG9NV2a">推荐示例</span>
+              <div style="flex:1; height:1px; background:var(--border-color);" data-page-node-id="gM0d5aXwLAvNYfQTVweHs5"></div>
+            </div>
+            <div class="example-grid" data-page-node-id="1DRnyiXKgFNR1OKMmc5lVM">
+              <div class="example-card" onclick="useExample('双十一有哪些商家参与活动','db','chase_double11')" data-page-node-id="7hqPdlaz19owEPsjT21xfv">
+                <div class="example-icon" style="background:rgba(56,166,255,0.1); color:var(--accent);" data-page-node-id="tNpQ9iH8JKUczPFrN07xyS">📊</div>
+                <div data-page-node-id="pA62dDmUP78nKnYOW6AtCh"><h3 data-page-node-id="GvpfR9Nhw8cJECtnG6C0yX">数据库分析</h3><p data-page-node-id="CL3nx8qIY6xCyxUSxHbHpO">双十一活动商家分析</p></div>
+              </div>
+              <div class="example-card" onclick="useExample('列出所有书名','db','chase_book')" data-page-node-id="mK4KUUCkMOlSu0HhzkqA0w">
+                <div class="example-icon" style="background:rgba(63,185,80,0.1); color:var(--success);" data-page-node-id="eGzr4XiP5MhUvnp3oX8r2z">🗄️</div>
+                <div data-page-node-id="4Sjf49vxUTUy7OCCU0tObY"><h3 data-page-node-id="0YvMoTc5zzLQnuSAr8O6Yu">数据查询</h3><p data-page-node-id="clvNrWwJNIlFKHCYKj5BK3">图书库数据检索</p></div>
+              </div>
+              <div class="example-card" onclick="useExample('你好，你能做什么','none','')" data-page-node-id="xTziwJXjTzwGDYNBxFfNXF">
+                <div class="example-icon" style="background:rgba(188,140,255,0.1); color:var(--purple);" data-page-node-id="Duby2AhZb62fAREfr6IGRZ">💬</div>
+                <div data-page-node-id="oAUNTV6LexDnBsGIvH8Cj7"><h3 data-page-node-id="PSR3PcGxByENCvfSsQ3ii0">纯对话</h3><p data-page-node-id="RsiCCIQEnZeGGBuB50X0Xr">与AI自由对话</p></div>
+              </div>
+              <div class="example-card" onclick="useExample('查询电视剧信息','db','chase_tv')" data-page-node-id="SbclTTDEjaf2M1BapGpC7A">
+                <div class="example-icon" style="background:rgba(210,153,34,0.1); color:var(--warning);" data-page-node-id="Y1nQBCCFOBWZSTQKTYBcCI">📺</div>
+                <div data-page-node-id="cGGTL9F1xjCK8fBxuHtX1G"><h3 data-page-node-id="oonXDgr1Kmje3VIWwH1DpK">多维分析</h3><p data-page-node-id="RaEumiD8IFQoFJCeBOVmzg">电视剧数据查询</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 对话区（有对话时显示） -->
+        <div id="ask-chat" style="flex:1; display:none; flex-direction:column; min-height:0;" data-page-node-id="jPtm7GyErTgzqGA9qfVXrZ">
+          <div class="chat-toolbar" data-page-node-id="kAuwOnWtPl7Ofec2PYLajY">
+            <span class="chat-toolbar-info" id="chat-mode-info" data-page-node-id="F7HQO1roqJk8JStzP7CcH8"></span>
+            <div class="topbar-spacer" data-page-node-id="0SHnIIsYBgOSaEUxhfkF7j"></div>
+            <button class="btn btn-sm" onclick="newChatSession()" data-page-node-id="PP4VwLPPzcOyBJUDvKZJtH"><i class="fa-solid fa-plus" data-page-node-id="D5BHMFl0Q8lCzVCRkeKRPU"></i> 新建会话</button>
+            <button class="btn btn-sm" onclick="clearChat()" data-page-node-id="pFDQyXdWFCYsSJ7Bch1tMg"><i class="fa-solid fa-trash" data-page-node-id="vNaPXEwQkpoBSk22CnBace"></i> 清空</button>
+          </div>
+          <div class="chat-messages" id="chat-messages" style="flex:1; overflow-y:auto; padding:8px 0;" data-page-node-id="VhKyFYaC33MoqqHwBQ33mP"></div>
+          <div class="chat-input-area" data-page-node-id="HxXIfpyTuZSyLUucO3IR8m">
+            <div class="chat-input-card" data-page-node-id="tHmJ9nVmMqVZHFUUaiHz2H">
+              <div class="attached-files" id="attached-files" style="display:none;"></div>
+              <textarea id="chat-input" class="hero-textarea" placeholder="继续提问..." rows="1"
+                onkeydown="handleChatKey(event)" oninput="autoResize(this)"></textarea>
+              <div class="hero-toolbar" data-page-node-id="yILBAXwaOI27ocxBurrkHZ">
+                <div class="hero-toolbar-left" data-page-node-id="mbPkg9wXI0U8L8FtH6QVZE">
+                  <button class="hero-tool-btn" id="chat-tool-db" onclick="toggleChatToolMenu('db')" title="选择数据源">
+                    <i class="fa-solid fa-database"></i>
+                    <span id="chat-tool-db-label">数据源</span>
+                  </button>
+                  <button class="hero-tool-btn" id="chat-tool-kb" onclick="toggleChatToolMenu('kb')" title="选择知识库">
+                    <i class="fa-solid fa-book"></i>
+                    <span id="chat-tool-kb-label">知识库</span>
+                  </button>
+                  <button class="hero-tool-btn chat-icon-btn" id="chat-tool-attach" onclick="document.getElementById('file-input').click()" title="添加本地文件">
+                    <i class="fa-solid fa-paperclip"></i>
+                  </button>
+                  <input type="file" id="file-input" multiple style="display:none;" onchange="handleFileSelect(this)">
+                  <button class="hero-tool-btn" id="chat-tool-skill" onclick="toggleChatToolMenu('skill')" title="选择技能">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    <span id="chat-tool-skill-label">技能</span>
+                  </button>
+                  <button class="hero-tool-btn" id="chat-tool-conn" onclick="toggleChatToolMenu('conn')" title="选择 MCP 连接器">
+                    <i class="fa-solid fa-plug"></i>
+                    <span id="chat-tool-conn-label">连接器</span>
+                  </button>
+                  <span class="chat-context" id="chat-context-display" data-page-node-id="uDGMcYDB5NLJCEJWm5YSH9"></span>
+                </div>
+                <button class="hero-send-btn" id="chat-send-btn" onclick="sendQuestion()" data-page-node-id="wrtHcbu6H0Wzix0q41rM6d">
+                  <i class="fa-solid fa-arrow-up" data-page-node-id="N4XoHaqzkqYHw5XxefMVni"></i>
+                </button>
+                <button class="hero-send-btn" id="chat-stop-btn" onclick="stopQuestion()" style="display:none; background:var(--danger); color:white;">
+                  <i class="fa-solid fa-stop"></i>
+                </button>
+              </div>
+            </div>
+            <div class="tool-dropdown chat-tool-dropdown" id="chat-dropdown-db" style="display:none;z-index:200;">
+              <div class="tool-dropdown-search"><input type="text" placeholder="搜索数据源..." oninput="filterDropdown('chat-db', this.value)"></div>
+              <div id="chat-dropdown-db-list"></div>
+            </div>
+            <div class="tool-dropdown chat-tool-dropdown" id="chat-dropdown-kb" style="display:none;z-index:200;">
+              <div class="tool-dropdown-search"><input type="text" placeholder="搜索知识库..." oninput="filterDropdown('chat-kb', this.value)"></div>
+              <div id="chat-dropdown-kb-list"></div>
+            </div>
+            <div class="tool-dropdown chat-tool-dropdown" id="chat-dropdown-skill" style="display:none;z-index:200;">
+              <div class="tool-dropdown-search"><input type="text" placeholder="搜索技能..." oninput="filterDropdown('chat-skill', this.value)"></div>
+              <div id="chat-dropdown-skill-list"></div>
+            </div>
+            <div class="tool-dropdown chat-tool-dropdown" id="chat-dropdown-conn" style="display:none;z-index:200;">
+              <div class="tool-dropdown-search"><input type="text" placeholder="搜索连接器..." oninput="filterDropdown('chat-conn', this.value)"></div>
+              <div id="chat-dropdown-conn-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 应用页 ===== -->
+      <div class="page-content content-hidden" id="page-apps">
+        <div class="page-header">
+          <div class="page-title">我的应用</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-primary btn-sm" onclick="showCreateAppModal()"><i class="fa-solid fa-plus"></i> 创建应用</button>
+            <button class="btn btn-sm" onclick="loadApps()"><i class="fa-solid fa-rotate"></i> 刷新</button>
+          </div>
+        </div>
+        <div id="app-list"></div>
+      </div>
+
+      <!-- ===== 数据源页 ===== -->
+      <div class="page-content content-hidden" id="page-datasources" data-page-node-id="Evr1jj5LNLFQGAFeYTz5UD">
+        <div class="page-header" data-page-node-id="HHcm3HeTdJTk0yUPz88ypW">
+          <div class="page-title" data-page-node-id="Saw1zAHKpgnfjqjgoKF1Wl">数据源管理</div>
+          <div style="display:flex; gap:8px;" data-page-node-id="mRc0YqS3GD7QakFQHOflvK">
+            <button class="btn btn-primary btn-sm" onclick="showAddDsModal()" data-page-node-id="m1awnPlpi5IOjs3BzpGsAa"><i class="fa-solid fa-plus" data-page-node-id="O6LNyTxHS61vQYejXgGltc"></i> 添加数据源</button>
+            <button class="btn btn-sm" onclick="loadDatasources()" data-page-node-id="w8rJZkFCTlWyECAzAq26ws"><i class="fa-solid fa-rotate" data-page-node-id="oGGhuHHw7O6CZii8g4yZKV"></i> 刷新</button>
+          </div>
+        </div>
+        <div id="ds-list" data-page-node-id="EPplZslXNrkhBxINLcsq4k"></div>
+      </div>
+
+      <!-- ===== 知识库页 ===== -->
+      <div class="page-content content-hidden" id="page-knowledge" data-page-node-id="zrPfC5thJMrdMe10pR3jxs">
+        <div class="page-header" data-page-node-id="dlKuOtUMkQRxbocFeUDLBo">
+          <div class="page-title" data-page-node-id="xhUfJZiF6m3vmcD2nN2OG2">知识库管理</div>
+          <div style="display:flex; gap:8px;" data-page-node-id="ldQ7bAZvRShKglI72dPoLy">
+            <button class="btn btn-primary btn-sm" onclick="showAddKbModal()" data-page-node-id="pne4mxCRv2iAeyHkZUOJuN"><i class="fa-solid fa-plus" data-page-node-id="8rx2FkhETg480DfAKbtUDL"></i> 创建空间</button>
+            <button class="btn btn-sm" onclick="showUploadDocModal()"><i class="fa-solid fa-file-arrow-up"></i> 上传文档</button>
+            <button class="btn btn-sm" onclick="loadKnowledge()" data-page-node-id="nGSbP3PYycdeWLtyU1ue4i"><i class="fa-solid fa-rotate" data-page-node-id="8GS5XziMdh1fLQHOOsXhya"></i> 刷新</button>
+          </div>
+        </div>
+        <div id="kb-list" data-page-node-id="5EEvQNBflsE5xSiDEPCfZt"></div>
+      </div>
+
+      <!-- ===== 模型页 ===== -->
+      <div class="page-content content-hidden" id="page-models" data-page-node-id="s7R4WMluPnN4S9y1SNs3Hc">
+        <div class="page-header" data-page-node-id="9bCsuI2IyylLACGXgC45hL">
+          <div class="page-title" data-page-node-id="ERyit40DgbA4mnK3G1MVBE">模型管理</div>
+          <div style="display:flex; gap:8px;" data-page-node-id="0odAijuPf7HO448j2VpRjO">
+            <button class="btn btn-primary btn-sm" onclick="showStartModelModal()" data-page-node-id="Njlx7kHkmajK1Gn14rVY40"><i class="fa-solid fa-play" data-page-node-id="6wnLgkDR78FnEOeWXAMXSz"></i> 启动模型</button>
+            <button class="btn btn-sm" onclick="loadModels()" data-page-node-id="6celr51AA4hIOkCgscyGkO"><i class="fa-solid fa-rotate" data-page-node-id="P5OXahIJFZO63w1CvJBRyE"></i> 刷新</button>
+          </div>
+        </div>
+        <div id="model-list" data-page-node-id="duqn80Pslex5tCyJUo41LV"></div>
+      </div>
+
+      <!-- ===== 连接器页 ===== -->
+      <div class="page-content content-hidden" id="page-connectors" data-page-node-id="o54r123yFqIy7TBQPO0GdD">
+        <div class="page-header" data-page-node-id="WgMsAUW6GGKAzUYmGn3EIs">
+          <div class="page-title" data-page-node-id="Jm8sE2EHIlHtevocJSbIPd">MCP 连接器</div>
+          <button class="btn btn-sm" onclick="loadConnectors()" data-page-node-id="ElHMtJx3kcelaO2bhJPfem"><i class="fa-solid fa-rotate" data-page-node-id="jHk02teOp3M7Z5zbg5x6kl"></i> 刷新</button>
+        </div>
+        <div id="conn-list" data-page-node-id="Du5EgVri4ojmDodxY2gN1U"></div>
+      </div>
+
+      <!-- ===== 会话页 ===== -->
+      <div class="page-content content-hidden" id="page-conversations" data-page-node-id="H6LG1A0QhlmeEyLtIV9BuG">
+        <div class="page-header" data-page-node-id="SVNqWHKPjrygxJ5hVamf8V">
+          <div class="page-title" data-page-node-id="DJEcFfOBGyJGOBRBSGn41E">会话历史</div>
+          <button class="btn btn-sm" onclick="loadConversations()" data-page-node-id="UAiH8fcC6Rq2gdXMrF5CEM"><i class="fa-solid fa-rotate" data-page-node-id="k7gPRxEZyNwtJIkiR9eufu"></i> 刷新</button>
+        </div>
+        <div id="conv-list" data-page-node-id="mMk8PK2zgf0ibDBaG1HCdn"></div>
+      </div>
+
+      <!-- ===== 技能页 ===== -->
+      <div class="page-content content-hidden" id="page-skills">
+        <div class="page-header">
+          <div class="page-title">技能管理</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-primary btn-sm" onclick="showUploadSkillModal()"><i class="fa-solid fa-file-arrow-up"></i> 上传技能</button>
+            <button class="btn btn-sm" onclick="loadSkills()"><i class="fa-solid fa-rotate"></i> 刷新</button>
+          </div>
+        </div>
+        <div id="skill-list"></div>
+      </div>
+
+      <!-- ===== 提示词页 ===== -->
+      <div class="page-content content-hidden" id="page-prompts">
+        <div class="page-header">
+          <div class="page-title">提示词管理</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-primary btn-sm" onclick="showAddPromptModal()"><i class="fa-solid fa-plus"></i> 新建提示词</button>
+            <button class="btn btn-sm" onclick="loadPrompts()"><i class="fa-solid fa-rotate"></i> 刷新</button>
+          </div>
+        </div>
+        <div id="prompt-list"></div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<!-- ===== 模态框 ===== -->
+<div class="modal-overlay" id="modal-overlay" style="display:none;" onclick="closeModal(event)" data-page-node-id="6gpglQXcNGdHzwoHrqX8UM">
+  <div class="modal" id="modal-content" onclick="event.stopPropagation()" data-page-node-id="416HjZ7gnSr3NaZDllmS8z">
+    <div class="modal-header" data-page-node-id="6RGbhI691SFtlRUWkaX5cD">
+      <span class="modal-title" id="modal-title" data-page-node-id="2ZGeduzAtznXPBHK8vjYnL">标题</span>
+      <button class="modal-close" onclick="closeModalDirect()" data-page-node-id="E38Aag19P7dnXtH8E3SyIZ"><i class="fa-solid fa-xmark" data-page-node-id="MjFcEXkKfoj3PMVHzGK2yt"></i></button>
+    </div>
+    <div class="modal-body" id="modal-body" data-page-node-id="QwhspnnkgLIzX9DqgFQZ6S"></div>
+    <div class="modal-footer" id="modal-footer" data-page-node-id="zYIWeTUpfX5vbAYABWDbU9"></div>
+  </div>
+</div>
+
+<!-- Toast 容器 -->
+<div class="toast-container" id="toast-container" data-page-node-id="E3Z8s3fDM9ojEUPy2LZTeI"></div>
+
+<script src="/static/app.js?v=20260908b"></script>
+</body>
+</html>

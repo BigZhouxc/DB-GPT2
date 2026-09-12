@@ -1,0 +1,29 @@
+# 智能问数 Agent 服务依赖
+# 版本与本地 DB-GPT 0.8.2 对齐
+#
+# 注意：dbgpt-client 会拉入 dbgpt[cli,client] 完整依赖树（极慢），
+#       实际只需要 dbgpt-client + dbgpt-core 的少量运行时模块。
+#       因此在 Dockerfile 中用 --no-deps 安装 dbgpt-client，
+#       再手动安装真正需要的运行时依赖（下方列表）。
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+# FastAPI 表单/文件上传（/files/upload、/knowledge/documents/upload 需要）
+python-multipart>=0.0.9
+# dbgpt 运行时依赖（dbgpt-client 间接依赖 dbgpt + dbgpt-ext）
+beautifulsoup4>=4.12
+cachetools>=5.3
+cloudpickle>=2.0
+msgpack>=1.0
+shortuuid>=1.0
+sqlalchemy>=2.0.25,<2.0.29
+pymysql>=1.1
+apscheduler>=3.10,<4
+tomli>=2.2
+typeguard>=4.0
+typing-inspect>=0.9
+chardet>=5.0
+snowflake-id>=0.5
+pydantic-settings>=2.0
+# pydantic v2（dbgpt-core 需要）
+pydantic>=2.9

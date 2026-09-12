@@ -1,0 +1,22 @@
+# Dependencies
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Docker
+docker-compose.yml
+
+# Environment
+.env
+*.env.local
+
+# Temp files
+*.tmp
+*.bak
