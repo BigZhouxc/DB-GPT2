@@ -271,6 +271,7 @@ class QnAAgent:
         skill_name: Optional[str] = None,
         connector_ids: Optional[list] = None,
         database_name: Optional[str] = None,
+        database_names: Optional[list] = None,
         file_ids: Optional[list] = None,
         temperature: float = 0.6,
         max_new_tokens: int = 4000,
@@ -279,6 +280,10 @@ class QnAAgent:
         """React Agent 流式问答（SSE 事件流）。
 
         调用 DB-GPT 原生 /api/v1/chat/react-agent，支持多步推理 + SQL 执行。
+        当 database_names 包含多个数据源时，在调 DB-GPT 之前执行前置编排：
+          - 工具1: 数据源选择（LLM 从候选库中选最合适的）
+          - 工具2: 数据表选择（LLM 从选中库选相关表和字段）
+        然后将选择结果注入 ext_info，继续委托 DB-GPT 完成 SQL 生成+执行。
 
         DB-GPT 通过 ext_info 承载以下可选资源（与 DB-GPT 前端一致）：
           - skill_name       : 预选 Skill（加载该技能的工具集）
@@ -294,6 +299,7 @@ class QnAAgent:
             skill_name: Skill 名称（来自 GET /api/v1/skills/list）
             connector_ids: MCP 连接器 ID 列表
             database_name: 数据库名（优先级高于 chat_param）
+            database_names: 多数据源列表（App 绑定多个时传入，触发前置选择）
             file_ids: 会话附件文件 ID 列表
             temperature / max_new_tokens: LLM 采样参数
 
@@ -302,6 +308,7 @@ class QnAAgent:
         """
         import httpx
         import os
+        from modules.tool_orchestrator import ToolOrchestrator, make_tool_sse
 
         base = os.getenv("DBGPT_API_BASE", "http://127.0.0.1:5670/api/v2")
         # 确保 base 包含 /api/v2，否则添加
@@ -312,21 +319,103 @@ class QnAAgent:
                 base = base.rstrip("/") + "/api/v2"
         react_url = base.replace("/api/v2", "/api/v1") + "/chat/react-agent"
 
-        # 构造 user_input，带 [Database: xxx] 前缀让 DB-GPT 知道用哪个库
-        user_input = question
-        if chat_param:
-            user_input = f"[Database: {chat_param}] {question}"
+        # ========== 前置编排：多数据源智能选择 ==========
+        selected_ds = None
+        table_hints = None
 
-        db_name = database_name or chat_param or ""
+        if database_names and len(database_names) > 1:
+            orchestrator = ToolOrchestrator(model=self.model)
+
+            # --- 工具 1: 数据源选择 ---
+            yield make_tool_sse("step.start", "datasource_select", {
+                "tool_name": "数据源选择",
+                "thought": f"从 {len(database_names)} 个候选数据源中选择最合适的一个",
+            })
+
+            try:
+                ds_result = await orchestrator.select_datasource(question, database_names)
+                selected_ds = ds_result.get("datasource", "")
+                yield make_tool_sse("step.meta", "datasource_select", {
+                    "tool_name": "数据源选择",
+                    "result": ds_result,
+                })
+            except Exception as e:
+                ds_result = {
+                    "datasource": database_names[0],
+                    "reason": f"工具异常: {e}",
+                    "fallback": True,
+                }
+                selected_ds = database_names[0]
+                yield make_tool_sse("step.meta", "datasource_select", {
+                    "tool_name": "数据源选择",
+                    "result": ds_result,
+                    "error": str(e),
+                })
+
+            yield make_tool_sse("step.done", "datasource_select", {})
+
+            # --- 工具 2: 数据表选择 ---
+            if selected_ds:
+                yield make_tool_sse("step.start", "table_select", {
+                    "tool_name": "数据表选择",
+                    "thought": f"从数据源 {selected_ds} 中选择相关数据表",
+                })
+
+                try:
+                    tbl_result = await orchestrator.select_tables(question, selected_ds)
+                    table_hints = tbl_result
+                    yield make_tool_sse("step.meta", "table_select", {
+                        "tool_name": "数据表选择",
+                        "result": tbl_result,
+                    })
+                except Exception as e:
+                    tbl_result = {
+                        "tables": [],
+                        "fields": {},
+                        "reason": f"工具异常: {e}",
+                        "fallback": True,
+                    }
+                    yield make_tool_sse("step.meta", "table_select", {
+                        "tool_name": "数据表选择",
+                        "result": tbl_result,
+                        "error": str(e),
+                    })
+
+                yield make_tool_sse("step.done", "table_select", {})
+
+        elif database_names and len(database_names) == 1:
+            selected_ds = database_names[0]
+            yield make_tool_sse("step.start", "datasource_select", {
+                "tool_name": "数据源选择",
+                "thought": "仅有一个数据源，直接使用",
+            })
+            yield make_tool_sse("step.meta", "datasource_select", {
+                "tool_name": "数据源选择",
+                "result": {"datasource": selected_ds, "reason": "仅有一个数据源，直接使用", "fallback": True},
+            })
+            yield make_tool_sse("step.done", "datasource_select", {})
+
+        # ========== 委托 DB-GPT react-agent ==========
+        final_db = selected_ds or database_name or chat_param or ""
+
+        user_input = question
+        prefix_parts = []
+        if final_db:
+            prefix_parts.append(f"[Database: {final_db}]")
+        if table_hints and table_hints.get("tables"):
+            tables_str = ",".join(table_hints["tables"])
+            prefix_parts.append(f"[Tables: {tables_str}]")
+        if prefix_parts:
+            user_input = f"{' '.join(prefix_parts)} {question}"
+
         ext_info: dict = {}
-        if db_name:
-            ext_info["database_name"] = db_name
+        if final_db:
+            ext_info["database_name"] = final_db
             ext_info["database_type"] = "mysql"
         if skill_name:
             ext_info["skill_name"] = skill_name
         if knowledge_space:
             ext_info["knowledge_space"] = knowledge_space
-        # 只注入用户显式选中的连接器（Task C）
         if connector_ids:
             ext_info["connector_ids"] = list(connector_ids)
         if file_ids:
@@ -341,7 +430,7 @@ class QnAAgent:
             "user_input": user_input,
             "temperature": temperature,
             "max_new_tokens": max_new_tokens,
-            "select_param": chat_param or "",
+            "select_param": final_db or "",
             "ext_info": ext_info,
         }
 
@@ -360,10 +449,6 @@ class QnAAgent:
                             yield line + "\n\n"
                             continue
 
-                        # 对 final 事件的 content 做清洗：
-                        # 1. 去除 LLM 可能泄露的 ````vis-thinking ... ```` 代码块
-                        # 2. 去除 ReAct 原始格式残留（Thought:/Action:/Action Input: 等）
-                        # 3. 从 terminate action_input 中提取真正的 result
                         if evt.get("type") == "final":
                             content = evt.get("content", "")
                             if content:

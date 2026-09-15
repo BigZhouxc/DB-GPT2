@@ -740,13 +740,16 @@ async function sendReactAgent(body, aiTextEl) {
     if (type === "step.start") {
       const stepId = data.id || `step-${stepCount}`;
       currentStepId = stepId;
+      // 工具类型判断：数据源选择/数据表选择有特殊渲染
+      const toolType = data.tool_type || "";
+      const toolName = data.tool_name || data.title || data.detail || (toolType === "datasource_select" ? "数据源选择" : toolType === "table_select" ? "数据表选择" : "思考中");
       if (!stepEls[stepId]) {
         stepCount++;
         const stepEl = document.createElement("div");
-        stepEl.className = "react-step";
+        stepEl.className = "react-step" + (toolType ? " tool-step" : "");
         stepEl.innerHTML = `<div class="react-step-header" onclick="toggleReactStep('${uid}-${stepId}')">
           <span class="react-step-badge">${stepCount}</span>
-          <span class="react-step-action">${escapeHtml(data.title || data.detail || "思考中")}</span>
+          <span class="react-step-action">${escapeHtml(toolName)}</span>
           <span class="react-step-toggle"><i class="fa-solid fa-chevron-down"></i></span>
         </div><div class="react-step-body" id="react-body-${uid}-${stepId}"><div class="react-step-loading">等待数据...</div></div>`;
         stepsContainer.appendChild(stepEl);
@@ -756,12 +759,14 @@ async function sendReactAgent(body, aiTextEl) {
           badgeEl: stepEl.querySelector(".react-step-badge"),
           actionEl: stepEl.querySelector(".react-step-action"),
           rawContent: "",
-          _pendingRender: false,  // ★ 节流标记
+          _pendingRender: false,
+          toolType: toolType,
         };
       } else {
         const entry = stepEls[stepId];
-        if (entry.actionEl && (data.title || data.detail)) {
-          entry.actionEl.textContent = data.title || data.detail;
+        entry.toolType = toolType;
+        if (entry.actionEl && (data.title || data.detail || toolName)) {
+          entry.actionEl.textContent = toolName;
         }
       }
       scrollChatBottom();
@@ -773,6 +778,57 @@ async function sendReactAgent(body, aiTextEl) {
       if (entry && entry.bodyEl) {
         const bodyEl = entry.bodyEl;
         bodyEl.innerHTML = "";
+
+        // ========== 工具定制化渲染 ==========
+        if (data.tool_type === "datasource_select" || entry.toolType === "datasource_select") {
+          const result = data.result || {};
+          let html = "";
+          if (data.thought) html += `<div class="react-step-thought-full">💭 ${escapeHtml(data.thought)}</div>`;
+          html += `<div class="tool-result-card tool-ds-card">
+            <span class="tool-label">已选择数据源</span>
+            <span class="tool-value tool-ds-name">${escapeHtml(result.datasource || "未选择")}</span>`;
+          if (result.reason) html += `<div class="tool-reason">${escapeHtml(result.reason)}</div>`;
+          if (result.fallback) html += `<div class="tool-badge-fallback">自动兜底</div>`;
+          html += `</div>`;
+          bodyEl.innerHTML = html;
+          scrollChatBottom();
+          return;
+        }
+
+        if (data.tool_type === "table_select" || entry.toolType === "table_select") {
+          const result = data.result || {};
+          let html = "";
+          if (data.thought) html += `<div class="react-step-thought-full">💭 ${escapeHtml(data.thought)}</div>`;
+          html += `<div class="tool-result-card tool-tbl-card">
+            <span class="tool-label">已选择数据表</span>`;
+          if (result.tables && result.tables.length > 0) {
+            html += `<div class="tool-tables">`;
+            result.tables.forEach(t => {
+              html += `<span class="tool-table-tag">${escapeHtml(t)}</span>`;
+            });
+            html += `</div>`;
+            // 显示选中字段
+            if (result.fields) {
+              let fieldsHtml = "";
+              for (const [tbl, cols] of Object.entries(result.fields)) {
+                if (cols && cols.length > 0) {
+                  fieldsHtml += `<div class="tool-fields-row"><span class="tool-fields-tbl">${escapeHtml(tbl)}</span><span class="tool-fields-cols">${escapeHtml(cols.join(", "))}</span></div>`;
+                }
+              }
+              if (fieldsHtml) html += `<div class="tool-fields">${fieldsHtml}</div>`;
+            }
+          } else {
+            html += `<div class="tool-empty">未选择数据表</div>`;
+          }
+          if (result.reason) html += `<div class="tool-reason">${escapeHtml(result.reason)}</div>`;
+          if (result.fallback) html += `<div class="tool-badge-fallback">自动兜底</div>`;
+          html += `</div>`;
+          bodyEl.innerHTML = html;
+          scrollChatBottom();
+          return;
+        }
+
+        // ========== 默认渲染（DB-GPT react-agent 原生步骤） ==========
         let content = "";
         if (data.thought) content += `<div class="react-step-thought-full">💭 ${escapeHtml(data.thought)}</div>`;
         if (data.action) content += `<div class="react-step-action-label">🔧 动作: <code>${escapeHtml(data.action)}</code></div>`;

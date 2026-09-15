@@ -33,7 +33,8 @@ class AppCreateRequest(BaseModel):
     app_name: str = Field(..., description="应用名称")
     app_describe: str = Field("", description="应用描述")
     chat_mode: str = Field("chat_react_agent", description="对话模式：chat_normal/chat_with_db_execute/chat_with_db_qa/chat_dashboard/chat_excel/chat_knowledge/chat_flow/chat_react_agent/chat_knowledge_agent")
-    database_name: str = Field("", description="绑定的数据源（创建后不可变）")
+    database_name: str = Field("", description="绑定的数据源（单个，兼容旧版。优先使用 database_names）")
+    database_names: List[str] = Field(default_factory=list, description="绑定的数据源列表（多选，支持多数据源智能选择）")
     knowledge_space: str = Field("", description="绑定的知识库（创建后不可变）")
     model: str = Field(DEFAULT_MODEL, description="模型")
     temperature: float = Field(0.6, description="温度")
@@ -48,6 +49,7 @@ class AppEditRequest(BaseModel):
     app_describe: str = Field("", description="应用描述")
     chat_mode: str = Field("chat_react_agent", description="对话模式")
     database_name: str = Field("", description="数据源（编辑时忽略，保持原值）")
+    database_names: List[str] = Field(default_factory=list, description="数据源列表（编辑时忽略，保持原值）")
     knowledge_space: str = Field("", description="知识库（编辑时忽略，保持原值）")
     model: str = Field(DEFAULT_MODEL, description="模型")
     temperature: float = Field(0.6, description="温度")
@@ -129,8 +131,10 @@ async def _resolve_available_model(preferred: str) -> str:
 
 def _build_app_body(req):
     resources = []
-    if req.database_name:
-        resources.append({"type": "database", "name": "数据源", "value": json.dumps({"name": "datasource", "db_name": req.database_name}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
+    # 多数据源绑定：优先使用 database_names，兼容单个 database_name
+    db_names = req.database_names if req.database_names else ([req.database_name] if req.database_name else [])
+    for db_name in db_names:
+        resources.append({"type": "database", "name": f"数据源-{db_name}", "value": json.dumps({"name": "datasource", "db_name": db_name}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
     if req.knowledge_space:
         resources.append({"type": "knowledge", "name": "知识库", "value": json.dumps({"name": "knowledge", "knowledge_space": req.knowledge_space}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
     # chat_mode 映射到 DB-GPT 的 team_mode + team_context
@@ -170,7 +174,7 @@ def _build_app_body(req):
     }
 
 def _extract_resources(app_detail):
-    res = {"database_name": "", "knowledge_space": "", "model": "", "chat_mode": "chat_react_agent", "prompt_template": ""}
+    res = {"database_name": "", "database_names": [], "knowledge_space": "", "model": "", "chat_mode": "chat_react_agent", "prompt_template": ""}
     # 从 team_context 提取 chat_mode
     tc = app_detail.get("team_context")
     if tc:
@@ -182,6 +186,7 @@ def _extract_resources(app_detail):
             res["chat_mode"] = tc_parsed.get("chat_scene", "chat_react_agent")
         except Exception:
             pass
+    db_names = []
     for detail in app_detail.get("details") or []:
         for r in detail.get("resources") or []:
             rtype = r.get("type", "")
@@ -190,8 +195,13 @@ def _extract_resources(app_detail):
                 parsed = json.loads(rval) if isinstance(rval, str) and rval.startswith("{") else {}
             except Exception:
                 parsed = {}
-            if rtype in ("database", "datasource") and not res["database_name"]:
-                res["database_name"] = parsed.get("db_name") or rval
+            if rtype in ("database", "datasource"):
+                db_name = parsed.get("db_name") or rval
+                if db_name:
+                    db_names.append(db_name)
+                    # 兼容旧字段：第一个数据源作为 database_name
+                    if not res["database_name"]:
+                        res["database_name"] = db_name
             elif rtype == "knowledge" and not res["knowledge_space"]:
                 res["knowledge_space"] = parsed.get("knowledge_space") or rval
         lsv = detail.get("llm_strategy_value")
@@ -208,6 +218,7 @@ def _extract_resources(app_detail):
         pt = detail.get("prompt_template")
         if pt and not res["prompt_template"]:
             res["prompt_template"] = pt
+    res["database_names"] = db_names
     return res
 
 
@@ -316,13 +327,20 @@ async def edit_app(app_code: str, req: AppEditRequest):
         old_res = _extract_resources(app_detail)
 
         # 2. 数据源/知识库：请求传了新值则用新值，空值保持原值
-        db_name = req.database_name if req.database_name else old_res.get("database_name", "")
+        old_db_names = old_res.get("database_names", [])
+        if req.database_names:
+            db_names = req.database_names
+        elif req.database_name:
+            db_names = [req.database_name]
+        else:
+            db_names = old_db_names if old_db_names else ([old_res.get("database_name", "")] if old_res.get("database_name") else [])
         kb_name = req.knowledge_space if req.knowledge_space else old_res.get("knowledge_space", "")
         # prompt_template：空值保持原值
         pt_name = req.prompt_template if req.prompt_template else old_res.get("prompt_template", "")
         resources = []
-        if db_name:
-            resources.append({"type": "database", "name": "数据源", "value": json.dumps({"name": "datasource", "db_name": db_name}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
+        for db_name in db_names:
+            if db_name:
+                resources.append({"type": "database", "name": f"数据源-{db_name}", "value": json.dumps({"name": "datasource", "db_name": db_name}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
         if kb_name:
             resources.append({"type": "knowledge", "name": "知识库", "value": json.dumps({"name": "knowledge", "knowledge_space": kb_name}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
 
@@ -435,6 +453,7 @@ async def chat_with_app(app_code: str, req: AppChatRequest):
         agent.set_session(sessions.get_or_create(session_key))
 
         db_name = res.get("database_name", "")
+        db_names = res.get("database_names", [])
         kb_name = res.get("knowledge_space", "")
 
         async def gen():
@@ -449,6 +468,7 @@ async def chat_with_app(app_code: str, req: AppChatRequest):
                         skill_name=req.skill_name,
                         connector_ids=req.connector_ids,
                         database_name=db_name or None,
+                        database_names=db_names if db_names else None,
                         file_ids=req.file_ids,
                         temperature=req.temperature or 0.6,
                         max_new_tokens=req.max_new_tokens or 4000,
@@ -470,6 +490,7 @@ async def chat_with_app(app_code: str, req: AppChatRequest):
                         skill_name=req.skill_name,
                         connector_ids=req.connector_ids,
                         database_name=db_name or None,
+                        database_names=db_names if db_names else None,
                         file_ids=req.file_ids,
                         temperature=req.temperature or 0.6,
                         max_new_tokens=req.max_new_tokens or 4000,

@@ -316,6 +316,10 @@ class ReactAgentRequest(BaseModel):
         None,
         description="数据库名（可选，优先级高于 chat_param，用于库路由）。"
     )
+    database_names: Optional[list] = Field(
+        None,
+        description="多数据源名称列表（可选）。传入多个时触发前置数据源+数据表智能选择工具。"
+    )
     file_ids: Optional[list] = Field(
         None,
         description="会话附件文件 ID 列表（可选，来自 POST /files/upload）。"
@@ -355,6 +359,7 @@ async def ask_react_agent(req: ReactAgentRequest):
                 skill_name=req.skill_name,
                 connector_ids=req.connector_ids,
                 database_name=req.database_name,
+                database_names=req.database_names,
                 file_ids=req.file_ids,
                 temperature=req.temperature,
                 max_new_tokens=req.max_new_tokens,

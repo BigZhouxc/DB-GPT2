@@ -1,6 +1,6 @@
 # 智能问数 Agent（qna-agent）项目概况
 
-> 更新时间：2026-09-15 15:20
+> 更新时间：2026-09-15 16:46
 > 用途：新会话交接文档。优化其他功能前请先通读本文。
 
 ---
@@ -85,6 +85,14 @@
 - 模型测试目前是同步阻塞（最长 90s），可改为后台任务+轮询
 - DB-GPT 补丁（manager.py）尚在本地包内，升级 DB-GPT 版本时需重新套用
 - 知识库/数据源模块尚未深度定制，按需迭代
+- **多数据源智能选择**（已实现 + 容器部署验证通过 ✅）：
+  - `modules/tool_orchestrator.py` 前置编排数据源选择 + 数据表选择
+  - `core/qna_agent.py` ask_react_stream 新增 database_names 参数
+  - `modules/app.py` App 支持绑定多个数据源
+  - `static/app.js` SSE 渲染区分 tool_type 卡片
+  - LLM 调用走 DB-GPT `/api/v2/chat/completions`（OpenAI 兼容，role=user）
+  - Schema 获取走 qna-agent 自身 `/datasources/{id}/schema`（容器内 localhost:8080）
+  - 可视化图表绘制工具（二期）
 
 ## 十、环境约定（必须遵守）
 
