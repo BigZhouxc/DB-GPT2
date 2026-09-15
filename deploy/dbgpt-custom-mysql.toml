@@ -1,0 +1,50 @@
+[system]
+language = "${env:DBGPT_LANG:-zh}"
+api_keys = []
+encrypt_key = "your_secret_key"
+
+# Server Configurations
+[service.web]
+host = "0.0.0.0"
+port = 5670
+cors_allowed_origins = "${env:DBGPT_CORS_ALLOWED_ORIGINS:-*}"
+
+[service.web.agent_context]
+max_context_tokens = 0
+reserved_tokens = 4096
+warning_threshold = 0.70
+error_threshold = 0.90
+critical_threshold = 0.95
+min_keep_recent_rounds = 3
+max_observation_age_rounds = 5
+truncated_observation_max_chars = 200
+min_keep_tokens = 10000
+max_compact_failures = 3
+max_parallel_subagents = 3
+
+[service.web.database]
+type = "mysql"
+host = "${env:MYSQL_HOST:-127.0.0.1}"
+port = "${env:MYSQL_PORT:-3306}"
+database = "${env:MYSQL_DATABASE:-dbgpt}"
+user = "${env:MYSQL_USER:-root}"
+password = "${env:MYSQL_PASSWORD:-aa123456}"
+
+[service.model.worker]
+host = "127.0.0.1"
+
+[rag.storage]
+[rag.storage.vector]
+type = "chroma"
+persist_path = "pilot/data"
+
+# Model Configurations
+# 模型全部改为数据库管理（dbgpt_serve_model 表，启动时自动恢复 enabled=1 的记录）。
+# 通过 qna-agent 前端 (http://localhost:8080) 的「添加模型」注册新模型。
+#
+# default_llm/default_embedding 指定默认模型名（必须与 DB 中注册的模型名一致），
+# 知识库/数据源摘要等内部功能会用它们。配套补丁：worker/manager.py 中
+# LocalWorkerManager 改为启动时无条件创建（原版 TOML 无 LLM 时会 NoneType 崩溃）。
+[models]
+default_llm = "TS-MOMA/DeepSeek-V4-Flash"
+default_embedding = "Qwen3-Embedding-8B"

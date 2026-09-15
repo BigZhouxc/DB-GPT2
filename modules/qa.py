@@ -87,10 +87,11 @@ class SessionRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # 辅助：获取/创建 Agent
 # ---------------------------------------------------------------------------
-def _get_agent(chat_param: str, session: str = "") -> QnAAgent:
+def _get_agent(chat_param: str, session: str = "", model_name: Optional[str] = None) -> QnAAgent:
     """根据 chat_param（可能为 None）获取 Agent。"""
     client = get_client()
-    agent = QnAAgent(client=client, model=MODEL)
+    use_model = model_name or MODEL
+    agent = QnAAgent(client=client, model=use_model)
     if session:
         agent.set_session(session)
     else:
@@ -323,6 +324,7 @@ class ReactAgentRequest(BaseModel):
     temperature: float = Field(0.6, description="温度参数")
     max_new_tokens: int = Field(4000, description="最大 token 数")
     prompt_code: Optional[str] = Field(None, description="自定义提示词的 prompt_code（从 App 配置传入）")
+    model_name: Optional[str] = Field(None, description="模型名称（可选，覆盖默认模型）")
 
 
 @router.post("/react-agent")
@@ -342,7 +344,7 @@ async def ask_react_agent(req: ReactAgentRequest):
     - done: 流结束
     - error: 错误
     """
-    agent = _get_agent(req.chat_param or req.knowledge_space or "", req.session)
+    agent = _get_agent(req.chat_param or req.knowledge_space or "", req.session, model_name=req.model_name)
 
     async def gen():
         try:

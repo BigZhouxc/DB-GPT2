@@ -589,6 +589,7 @@ async function sendQuestion(presetQuestion) {
     connector_ids: State.selectedConnectors,
     file_ids: State.attachedFiles.map(f => f.file_id),
     prompt_code: (_currentAppCode && _currentAppConfig?.resources?.prompt_template) || null,
+    model_name: (_currentAppCode && _currentAppConfig?.resources?.model) || document.getElementById("hero-model")?.value || null,
   });
   const kbParam = mode === "knowledge_agent" ? State.selectedKnowledge : "";
 
@@ -1962,17 +1963,24 @@ async function loadModels() {
     const types = typesResp.model_types || [];
     State.modelList = listResp.models || [];
 
+    // 提取去重的 worker_type 列表（llm / text2vec / reranker 等）
+    const workerTypes = [...new Set(types.map(t => t.worker_type).filter(Boolean))].sort();
+
     let html = `<div class="stat-grid">
-      <div class="stat-card"><div class="stat-icon">🧠</div><div class="stat-label">模型类型</div><div class="stat-value">${types.length}</div></div>
+      <div class="stat-card"><div class="stat-icon">🧠</div><div class="stat-label">模型类型</div><div class="stat-value">${workerTypes.length}</div></div>
       <div class="stat-card"><div class="stat-icon">⚡</div><div class="stat-label">运行中模型</div><div class="stat-value">${State.modelList.length}</div></div>
+      <div class="stat-card"><div class="stat-icon">📦</div><div class="stat-label">可注册规格</div><div class="stat-value">${types.length}</div></div>
     </div>`;
-    html += `<div class="card"><div class="card-header"><span class="card-title">运行中的模型</span></div><div class="card-body">`;
-    if (State.modelList.length === 0) html += `<div class="empty-state"><div class="empty-state-text">暂无运行中的模型</div></div>`;
+    html += `<div class="card"><div class="card-header"><span class="card-title">运行中的模型</span><button class="btn btn-sm btn-primary" style="margin-left:auto" onclick="showStartModelModal()">+ 添加模型</button></div><div class="card-body">`;
+    if (State.modelList.length === 0) html += `<div class="empty-state"><div class="empty-state-text">暂无运行中的模型，点击「添加模型」启动一个</div></div>`;
     else {
       html += `<div class="table-wrapper"><table class="data-table"><thead><tr><th>模型名</th><th>类型</th><th>主机</th><th>端口</th><th>状态</th><th>操作</th></tr></thead><tbody>`;
       State.modelList.forEach(m => {
         const healthy = m.healthy !== false;
-        html += `<tr><td><strong>${escapeHtml(m.model_name)}</strong></td><td><span class="tag tag-blue">${escapeHtml(m.model_type || "-")}</span></td><td>${escapeHtml(m.host || "-")}</td><td>${m.port || "-"}</td><td>${healthy ? '<span class="tag tag-green">健康</span>' : '<span class="tag tag-red">异常</span>'}</td><td><button class="btn btn-sm btn-danger" onclick="stopModel('${escapeHtml(m.model_name)}','${escapeHtml(m.model_type || "")}')">停止</button></td></tr>`;
+        const wt = escapeAttr(m.worker_type || m.model_type || "llm");
+        const h = escapeAttr(m.host || "127.0.0.1");
+        const p = m.port || 5670;
+        html += `<tr><td><strong>${escapeHtml(m.model_name)}</strong></td><td><span class="tag tag-blue">${escapeHtml(m.model_type || m.worker_type || "-")}</span></td><td>${escapeHtml(m.host || "-")}</td><td>${m.port || "-"}</td><td>${healthy ? '<span class="tag tag-green">健康</span>' : '<span class="tag tag-red\">异常</span>'}</td><td style="white-space:nowrap"><button class="btn btn-sm btn-primary" onclick="showEditModelModal('${escapeAttr(m.model_name)}','${wt}','${h}',${p})">编辑</button> <button class="btn btn-sm" style="background:var(--bg-info);color:var(--text-info);border:0.5px solid var(--color-border-info)" onclick="testModel('${escapeAttr(m.model_name)}','${wt}','${h}',${p})">测试</button> <button class="btn btn-sm btn-danger" onclick="deleteModel('${escapeAttr(m.model_name)}','${wt}','${h}',${p})">删除</button></td></tr>`;
       });
       html += `</tbody></table></div>`;
     }
@@ -1983,15 +1991,27 @@ async function loadModels() {
   }
 }
 
+// 构建模型类型下拉选项 HTML
+function _buildWorkerTypeOptions(selected) {
+  // 从已缓存的 model-types 中提取去重的 worker_type
+  let wts = ["llm", "text2vec", "reranker"];
+  // 如果有缓存的 types 数据，用实际的
+  return wts.map(wt => `<option value="${wt}"${wt === selected ? ' selected' : ''}>${wt}</option>`).join('');
+}
+
 function showStartModelModal() {
-  openModal("启动模型", `
+  const opts = _buildWorkerTypeOptions("llm");
+  openModal("添加模型", `
     <div class="form-field"><label>模型名称 *</label><input class="input" id="m-name" placeholder="如 TS-MOMA/DeepSeek-V4-Flash"></div>
-    <div class="form-field"><label>模型类型 *</label><input class="input" id="m-type" placeholder="如 llm"></div>
-    <div class="form-field"><label>主机</label><input class="input" id="m-host" placeholder="可选"></div>
-    <div class="form-field"><label>端口</label><input class="input" id="m-port" type="number" placeholder="可选"></div>
+    <div class="form-field"><label>模型类型 *</label><select class="select" id="m-type">${opts}</select></div>
+    <div class="form-field"><label>提供者 *</label><select class="select" id="m-provider"><option value="proxy/openai" selected>proxy/openai（远程API调用）</option><option value="huggingface">huggingface（本地HF模型）</option><option value="vllm">vllm（本地vLLM推理）</option><option value="llama.cpp">llama.cpp（本地CPU推理）</option><option value="llama_cpp_server">llama_cpp_server（本地llama服务）</option></select></div>
+    <div class="form-field"><label>API 地址</label><input class="input" id="m-apibase" placeholder="如 https://api.openai.com/v1（留空则用服务端默认）"></div>
+    <div class="form-field"><label>API Key</label><input class="input" id="m-apikey" type="password" placeholder="API Key（留空则用服务端默认）"></div>
+    <div class="form-field"><label>主机</label><input class="input" id="m-host" placeholder="可选，默认 127.0.0.1"></div>
+    <div class="form-field"><label>端口</label><input class="input" id="m-port" type="number" placeholder="可选，默认 5670"></div>
   `, [
     { text: "取消", class: "btn", action: "closeModalDirect()" },
-    { text: "启动", class: "btn btn-primary", action: "startModel()" },
+    { text: "添加", class: "btn btn-primary", action: "startModel()" },
   ]);
 }
 
@@ -1999,19 +2019,89 @@ async function startModel() {
   const body = { model_name: document.getElementById("m-name").value, model_type: document.getElementById("m-type").value };
   const host = document.getElementById("m-host").value; if (host) body.host = host;
   const port = document.getElementById("m-port").value; if (port) body.port = parseInt(port);
+  const provider = document.getElementById("m-provider").value; if (provider) body.provider = provider;
+  const apiBase = document.getElementById("m-apibase").value; if (apiBase) body.api_base = apiBase;
+  const apiKey = document.getElementById("m-apikey").value; if (apiKey) body.api_key = apiKey;
   if (!body.model_name || !body.model_type) { toast("模型名和类型不能为空", "error"); return; }
   try {
     await api("POST", "/models/start", body);
-    toast("模型启动请求已发送", "success");
+    toast("模型添加成功", "success");
     closeModalDirect();
     loadModels();
-  } catch (e) { toast("启动失败: " + e.message, "error"); }
+  } catch (e) { toast("添加失败: " + e.message, "error"); }
 }
 
 async function stopModel(name, type) {
-  if (!confirm(`确认停止模型 ${name}？`)) return;
-  try { await api("POST", "/models/stop", { model_name: name, model_type: type }); toast("停止请求已发送", "success"); loadModels(); }
-  catch (e) { toast("停止失败: " + e.message, "error"); }
+  // 已废弃：删除模型会自动停止实例，不再单独提供停止功能
+  toast("停止功能已移除，请使用删除按钮", "info");
+}
+
+function showEditModelModal(name, workerType, host, port) {
+  const opts = _buildWorkerTypeOptions(workerType);
+  openModal("编辑模型", `
+    <div class="form-field"><label>模型名称 *</label><input class="input" id="edit-m-name" value="${escapeAttr(name)}" placeholder="模型名称"></div>
+    <div class="form-field"><label>模型类型 *</label><select class="select" id="edit-m-wtype">${opts}</select></div>
+    <div class="form-field"><label>提供者</label><select class="select" id="edit-m-provider"><option value="proxy/openai" selected>proxy/openai（远程API调用）</option><option value="huggingface">huggingface（本地HF模型）</option><option value="vllm">vllm（本地vLLM推理）</option><option value="llama.cpp">llama.cpp（本地CPU推理）</option><option value="llama_cpp_server">llama_cpp_server（本地llama服务）</option></select></div>
+    <div class="form-field"><label>API 地址</label><input class="input" id="edit-m-apibase" placeholder="如 https://api.openai.com/v1（留空则用已有配置）"></div>
+    <div class="form-field"><label>API Key</label><input class="input" id="edit-m-apikey" type="password" placeholder="输入新 Key 覆盖（留空则保留原值）"></div>
+    <div class="form-field"><label>主机</label><input class="input" id="edit-m-host" value="${escapeAttr(host)}" placeholder="主机地址"></div>
+    <div class="form-field"><label>端口</label><input class="input" id="edit-m-port" type="number" value="${port}" placeholder="端口"></div>
+    <div style="margin-top:8px;padding:8px;background:var(--bg-secondary);border-radius:6px;font-size:13px;color:var(--text-secondary)">提示：编辑会停止当前模型实例，用新配置重新启动。仅对 DB 中有记录的模型有效。</div>
+  `, [
+    { text: "取消", class: "btn", action: "closeModalDirect()" },
+    { text: "测试连通性", class: "btn", style: "background:var(--bg-info);color:var(--text-info);border:0.5px solid var(--color-border-info)", action: "testModelFromEdit()" },
+    { text: "保存", class: "btn btn-primary", action: "editModel()" },
+  ]);
+}
+
+async function editModel() {
+  const body = {
+    model_name: document.getElementById("edit-m-name").value,
+    worker_type: document.getElementById("edit-m-wtype").value || "llm",
+    host: document.getElementById("edit-m-host").value || "127.0.0.1",
+    port: parseInt(document.getElementById("edit-m-port").value) || 5670,
+    model_type: document.getElementById("edit-m-wtype").value || "llm",
+  };
+  if (!body.model_name) { toast("模型名不能为空", "error"); return; }
+  const provider = document.getElementById("edit-m-provider").value; if (provider) body.provider = provider;
+  const apiBase = document.getElementById("edit-m-apibase").value; if (apiBase) body.api_base = apiBase;
+  const apiKey = document.getElementById("edit-m-apikey").value; if (apiKey) body.api_key = apiKey;
+  try {
+    await api("PUT", "/models/edit", body);
+    toast("模型更新请求已发送", "success");
+    closeModalDirect();
+    loadModels();
+  } catch (e) { toast("编辑失败: " + e.message, "error"); }
+}
+
+async function deleteModel(name, workerType, host, port) {
+  if (!confirm(`确认删除模型 ${name}？\n\n此操作将：\n1. 停止运行中的实例\n2. 从数据库中删除该模型记录\n\n此操作不可逆！`)) return;
+  try {
+    await api("DELETE", "/models/delete", { model_name: name, worker_type: workerType, host: host, port: port });
+    toast("模型已删除", "success");
+    loadModels();
+  } catch (e) { toast("删除失败: " + e.message, "error"); }
+}
+
+async function testModel(name, workerType, host, port) {
+  toast(`正在测试 ${name} 连通性...`, "info");
+  try {
+    const data = await api("POST", "/models/test", { model_name: name, worker_type: workerType, host: host, port: port });
+    toast(data.message || "连通正常", "success");
+  } catch (e) { toast("连通性测试失败: " + e.message, "error"); }
+}
+
+async function testModelFromEdit() {
+  const name = document.getElementById("edit-m-name").value;
+  const wt = document.getElementById("edit-m-wtype").value || "llm";
+  const host = document.getElementById("edit-m-host").value || "127.0.0.1";
+  const port = parseInt(document.getElementById("edit-m-port").value) || 5670;
+  if (!name) { toast("请先填写模型名称", "error"); return; }
+  toast(`正在测试 ${name} 连通性...`, "info");
+  try {
+    const data = await api("POST", "/models/test", { model_name: name, worker_type: wt, host: host, port: port });
+    toast(data.message || "连通正常", "success");
+  } catch (e) { toast("连通性测试失败: " + e.message, "error"); }
 }
 
 // ==========================================================================
@@ -2268,7 +2358,7 @@ function lockAppToolbar(res) {
 function openModal(title, bodyHtml, buttons) {
   document.getElementById("modal-title").textContent = title;
   document.getElementById("modal-body").innerHTML = bodyHtml;
-  document.getElementById("modal-footer").innerHTML = buttons.map(b => `<button class="${b.class}" onclick="${b.action}">${b.text}</button>`).join("");
+  document.getElementById("modal-footer").innerHTML = buttons.map(b => `<button class="${b.class}"${b.style ? ` style="${b.style}"` : ''} onclick="${b.action}">${b.text}</button>`).join("");
   document.getElementById("modal-overlay").style.display = "flex";
 }
 
@@ -2384,9 +2474,14 @@ function _cleanSummary(summary) {
   if (!summary) return "";
   let s = String(summary).trim();
   // 去除常见的附加信息模式：
+  // "[Database: xxx] 问题内容" → "问题内容"  （react-agent user_input 前缀）
   // "数据源: xxx | 知识库: yyy | 问题内容" → "问题内容"
   // "【数据源:xxx】问题内容" → "问题内容"
   // "数据库:xxx 知识库:yyy 问题内容" → "问题内容"
+  // 去除 [Database: xxx] [Knowledge: yyy] 等前缀（可能多个连排）
+  while (/^\[(database|datasource|data\s*source|knowledge|知识库|数据源|数据库)[:：]\s*[^\]]*\]\s*/i.test(s)) {
+    s = s.replace(/^\[(database|datasource|data\s*source|knowledge|知识库|数据源|数据库)[:：]\s*[^\]]*\]\s*/i, "");
+  }
   s = s.replace(/^【[^】]*】\s*/, "");
   s = s.replace(/^数据源[:：]\s*\S+\s*[|｜]\s*/i, "");
   s = s.replace(/^知识库[:：]\s*\S+\s*[|｜]\s*/i, "");

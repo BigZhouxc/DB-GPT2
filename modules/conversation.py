@@ -58,6 +58,9 @@ def _clean_summary(summary: str) -> str:
     if not summary:
         return ""
     s = str(summary).strip()
+    # 去除 [Database: xxx] [Knowledge: yyy] 等前缀（react-agent user_input 带的前缀，可能多个连排）
+    while re.match(r'^\[(database|datasource|data\s*source|knowledge|知识库|数据源|数据库)[:：]\s*[^\]]*\]\s*', s, re.IGNORECASE):
+        s = re.sub(r'^\[(database|datasource|data\s*source|knowledge|知识库|数据源|数据库)[:：]\s*[^\]]*\]\s*', '', s, flags=re.IGNORECASE)
     # 去除 【数据源:xxx】 等前缀
     s = re.sub(r'^【[^】]*】\s*', '', s)
     # 去除前缀中的 "数据源:xxx |" "知识库:yyy |" 等

@@ -6,6 +6,7 @@ App = 配置模板（创建时绑定数据源/知识库，之后不可变）
 对话中可变 = 技能/MCP/本地文件（不影响 App 配置）
 """
 import json
+import os
 from typing import List, Optional
 
 import httpx
@@ -21,6 +22,9 @@ router = APIRouter(prefix="/apps", tags=["App 管理"])
 
 _DBGPT_V1_BASE = "http://db-gpt-webserver-1:5670/api/v1"
 
+# 默认模型 —— 环境变量可覆盖；运行时会校验可用性，不可用自动回退
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "TS-MOMA/DeepSeek-V4-Flash")
+
 
 # ---------------------------------------------------------------------------
 # 数据模型
@@ -31,7 +35,7 @@ class AppCreateRequest(BaseModel):
     chat_mode: str = Field("chat_react_agent", description="对话模式：chat_normal/chat_with_db_execute/chat_with_db_qa/chat_dashboard/chat_excel/chat_knowledge/chat_flow/chat_react_agent/chat_knowledge_agent")
     database_name: str = Field("", description="绑定的数据源（创建后不可变）")
     knowledge_space: str = Field("", description="绑定的知识库（创建后不可变）")
-    model: str = Field("TS/GLM-5.2", description="模型")
+    model: str = Field(DEFAULT_MODEL, description="模型")
     temperature: float = Field(0.6, description="温度")
     max_new_tokens: int = Field(4000, description="最大 token")
     recommend_questions: List[str] = Field(default_factory=list, description="推荐问题")
@@ -45,7 +49,7 @@ class AppEditRequest(BaseModel):
     chat_mode: str = Field("chat_react_agent", description="对话模式")
     database_name: str = Field("", description="数据源（编辑时忽略，保持原值）")
     knowledge_space: str = Field("", description="知识库（编辑时忽略，保持原值）")
-    model: str = Field("TS/GLM-5.2", description="模型")
+    model: str = Field(DEFAULT_MODEL, description="模型")
     temperature: float = Field(0.6, description="温度")
     max_new_tokens: int = Field(4000, description="最大 token")
     recommend_questions: List[str] = Field(default_factory=list, description="推荐问题")
@@ -84,6 +88,45 @@ async def _v1_new_conv():
             return d.get("data", {}).get("conv_uid", "")
         return ""
 
+
+async def _list_running_models():
+    """获取当前运行中的模型名列表（失败返回空列表，不抛异常）。"""
+    try:
+        async with httpx.AsyncClient(timeout=10, trust_env=False) as c:
+            r = await c.get("http://db-gpt-webserver-1:5670/api/v2/serve/model/models")
+            d = r.json()
+            if d.get("success"):
+                models = d.get("data") or []
+                return [
+                    m.get("model_name", "")
+                    for m in models
+                    if isinstance(m, dict) and m.get("model_name")
+                ]
+    except Exception:
+        pass
+    return []
+
+
+async def _resolve_available_model(preferred: str) -> str:
+    """校验 preferred 模型是否在运行实例中，不可用则回退。
+
+    回退顺序：preferred（若可用）→ 运行中的第一个 llm → DEFAULT_MODEL。
+    查询失败时保守返回 preferred（保持原行为，不阻断对话）。
+    """
+    try:
+        running = await _list_running_models()
+        if not running:
+            return preferred  # 查询失败，保守放行
+        if preferred in running:
+            return preferred
+        # preferred 不可用 → 找第一个 llm 类型模型
+        for m in running:
+            if m and not m.startswith("text2vec") and "Embedding" not in m:
+                return m
+        return preferred
+    except Exception:
+        return preferred
+
 def _build_app_body(req):
     resources = []
     if req.database_name:
@@ -92,12 +135,27 @@ def _build_app_body(req):
         resources.append({"type": "knowledge", "name": "知识库", "value": json.dumps({"name": "knowledge", "knowledge_space": req.knowledge_space}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
     # chat_mode 映射到 DB-GPT 的 team_mode + team_context
     # native_app 模式 + team_context.chat_scene = chat_mode
+    # 注意：NativeTeamContext 校验要求 scene_name 必填（可为 None），
+    # 只传 chat_scene 会在加载应用时报 pydantic ValidationError
+    scene_names = {
+        "chat_normal": "Chat Normal",
+        "chat_with_db_qa": "Chat DB",
+        "chat_with_db_execute": "Chat DB",
+        "chat_excel": "Chat Excel",
+        "chat_dashboard": "Chat Dashboard",
+        "chat_knowledge": "Chat Knowledge",
+        "chat_react_agent": "chat_agent",
+        "chat_flow": "Chat Flow",
+    }
     return {
         "app_name": req.app_name,
         "app_describe": req.app_describe,
         "language": "zh",
         "team_mode": "native_app",
-        "team_context": json.dumps({"chat_scene": req.chat_mode}),
+        "team_context": json.dumps({
+            "chat_scene": req.chat_mode,
+            "scene_name": scene_names.get(req.chat_mode, req.chat_mode),
+        }),
         "published": "true",
         "param_need": [{"type": "resource"}, {"type": "model"}, {"type": "temperature"}, {"type": "max_new_tokens"}],
         "details": [{
@@ -274,7 +332,19 @@ async def edit_app(app_code: str, req: AppEditRequest):
             "app_describe": req.app_describe,
             "language": "zh",
             "team_mode": "native_app",
-            "team_context": json.dumps({"chat_scene": req.chat_mode}),
+            "team_context": json.dumps({
+                "chat_scene": req.chat_mode,
+                "scene_name": {
+                    "chat_normal": "Chat Normal",
+                    "chat_with_db_qa": "Chat DB",
+                    "chat_with_db_execute": "Chat DB",
+                    "chat_excel": "Chat Excel",
+                    "chat_dashboard": "Chat Dashboard",
+                    "chat_knowledge": "Chat Knowledge",
+                    "chat_react_agent": "chat_agent",
+                    "chat_flow": "Chat Flow",
+                }.get(req.chat_mode, req.chat_mode),
+            }),
             "published": "true",
             "param_need": [{"type": "resource"}, {"type": "model"}, {"type": "temperature"}, {"type": "max_new_tokens"}],
             "details": [{
@@ -357,7 +427,11 @@ async def chat_with_app(app_code: str, req: AppChatRequest):
                 conv_uid = f"app_{app_code}"
 
         session_key = f"app:{app_code}:{conv_uid}"
-        agent = QnAAgent()
+        app_model = res.get("model", "") or DEFAULT_MODEL
+        # 鲁棒性：应用配置的模型可能已被删除，校验运行实例，不可用则回退
+        app_model = await _resolve_available_model(app_model)
+        client = get_client()
+        agent = QnAAgent(client=client, model=app_model)
         agent.set_session(sessions.get_or_create(session_key))
 
         db_name = res.get("database_name", "")

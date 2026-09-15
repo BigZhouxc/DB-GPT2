@@ -32,6 +32,90 @@ class ChatMode(str, Enum):
         return [m.value for m in cls]
 
 
+def _clean_react_final(content: str) -> str:
+    """清洗 ReAct Agent final_content 中可能泄露的非用户内容。
+
+    场景：
+      1. LLM 输出中包含 ````vis-thinking ... ```` 代码块（thinking trace 泄露）
+      2. LLM 输出中包含原始 ReAct 格式残留（Thought:/Action:/Action Input:）
+      3. terminate 工具执行失败时，final_content 是 LLM 原始输出而非提取的 result
+         — 此时尝试从 Action Input 的 JSON 中提取 result 字段
+    """
+    if not content:
+        return content
+
+    s = content
+
+    # 检测是否包含 ReAct 格式残留
+    has_react_format = bool(re.search(
+        r'(?:^|\n)\s*(?:Thought|Action|Action\s+Intention|Action\s+Reason|Action\s+Input)\s*:',
+        s
+    ))
+
+    # 1. 去除 ````vis-thinking ... ```` 代码块（含 `````vis-thinking`）
+    s = re.sub(r'`{3,6}vis-thinking\b.*?`{3,6}', '', s, flags=re.DOTALL)
+
+    # 2. 去除 5/6 反引号包裹（LLM 有时会多包一层反引号）
+    s = re.sub(r'`{5,6}\n?', '', s)
+
+    if has_react_format:
+        # 3. 尝试提取 Action Input: {"result": "..."} 中的 result
+        #    Action Input 的值可能跨多行，JSON 中 result 值可能有大量转义
+        #    用正则找到 "Action Input:" 后面的 JSON 对象
+        ai_match = re.search(
+            r'Action\s*Input\s*:\s*(\{.*\})\s*$',
+            s,
+            re.DOTALL
+        )
+        if ai_match:
+            json_str = ai_match.group(1)
+            # 尝试标准 JSON 解析
+            try:
+                ai_obj = json.loads(json_str)
+                if "result" in ai_obj:
+                    return ai_obj["result"]
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+            # JSON 解析失败，尝试用正则直接提取 "result" 字段的值
+            # 匹配 "result": "..."（考虑转义引号）
+            result_match = re.search(
+                r'"result"\s*:\s*"((?:[^"\\]|\\.)*)"',
+                json_str,
+                re.DOTALL
+            )
+            if result_match:
+                raw_result = result_match.group(1)
+                # 反转义常见的 JSON 转义
+                result = raw_result.replace('\\n', '\n').replace('\\t', '\t') \
+                    .replace('\\"', '"').replace('\\\\', '\\')
+                return result
+
+        # 4. 如果 Action Input 提取失败但 content 确实是 ReAct 格式，
+        #    尝试截取最后一个有意义的行（通常是 Observation 或直接文本）
+        #    去除所有 ReAct 关键字行
+        lines = s.split('\n')
+        clean_lines = []
+        react_keywords = ('Thought:', 'Action:', 'Action Intention:',
+                          'Action Reason:', 'Action Input:', 'Observation:',
+                          'Human:', 'Assistant:')
+        for line in lines:
+            stripped = line.strip()
+            if any(stripped.startswith(kw) for kw in react_keywords):
+                continue
+            clean_lines.append(line)
+        cleaned = '\n'.join(clean_lines).strip()
+        if cleaned:
+            s = cleaned
+
+    # 5. 清理多余空行
+    s = re.sub(r'\n{3,}', '\n\n', s).strip()
+
+    return s
+
+    return s
+
+
 class QnAAgent:
     """核心问数 Agent。
 
@@ -269,7 +353,25 @@ class QnAAgent:
                     return
                 async for line in resp.aiter_lines():
                     if line.startswith("data: "):
-                        yield line + "\n\n"
+                        payload = line[6:]
+                        try:
+                            evt = json.loads(payload)
+                        except (json.JSONDecodeError, ValueError):
+                            yield line + "\n\n"
+                            continue
+
+                        # 对 final 事件的 content 做清洗：
+                        # 1. 去除 LLM 可能泄露的 ````vis-thinking ... ```` 代码块
+                        # 2. 去除 ReAct 原始格式残留（Thought:/Action:/Action Input: 等）
+                        # 3. 从 terminate action_input 中提取真正的 result
+                        if evt.get("type") == "final":
+                            content = evt.get("content", "")
+                            if content:
+                                cleaned = _clean_react_final(content)
+                                if cleaned:
+                                    evt["content"] = cleaned
+
+                        yield f'data: {json.dumps(evt, ensure_ascii=False)}\n\n'
 
     # ------------------------------------------------------------------
     # Knowledge Agent 流式问答（调用 DB-GPT /api/v1/chat/knowledge-agent）
