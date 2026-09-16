@@ -411,9 +411,16 @@
   </div>
   <div class="debug-preview-body">
     <div class="debug-preview-config">
-      <div class="form-field">
+      <div class="ds-table-section">
+        <div class="ds-section-header">
+          <span class="ds-section-title">数据库数据源</span>
+          <button class="btn btn-sm btn-primary" onclick="showSelectDsModal()"><i class="fa-solid fa-plus"></i> 添加数据源</button>
+        </div>
+        <div id="debug-ds-table-wrap"></div>
+      </div>
+      <div class="form-field" style="margin-top:12px;">
         <label>提示词（可选，覆盖应用配置）</label>
-        <textarea class="input" id="debug-preview-prompt" rows="3" placeholder="输入提示词文本，不填则使用应用已配置的提示词"></textarea>
+        <textarea class="input" id="debug-preview-prompt" rows="2" placeholder="输入提示词文本，不填则使用应用已配置的提示词" oninput="_updateDebugContext()"></textarea>
       </div>
     </div>
     <div class="debug-preview-messages" id="debug-preview-messages">
@@ -466,6 +473,6 @@
 <!-- Toast 容器 -->
 <div class="toast-container" id="toast-container" data-page-node-id="E3Z8s3fDM9ojEUPy2LZTeI"></div>
 
-<script src="/static/app.js?v=20260916c"></script>
+<script src="/static/app.js?v=20260916d"></script>
 </body>
 </html>

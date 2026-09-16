@@ -3310,6 +3310,17 @@ async function deleteApp(appCode, appName) {
 // ===== 编辑应用配置（对接外部平台 agent/detail + agent/update） =====
 // 编辑弹窗中选中的数据源状态
 let _editBoundDs = [];  // [{id, dbName, dbType, jdbcUrl, name, ip, port, tableNames: []}]
+// 数据源操作模式：'edit' = 编辑应用弹窗, 'debug' = 调试预览页面
+let _dsMode = "edit";
+
+// 统一获取当前模式的数据源数组
+function _curBoundDs() {
+  return _dsMode === "debug" ? _debugBoundDs : _editBoundDs;
+}
+// 统一设置当前模式的数据源数组
+function _setCurBoundDs(arr) {
+  if (_dsMode === "debug") _debugBoundDs = arr; else _editBoundDs = arr;
+}
 
 async function editAppConfig(appCode) {
   try {
@@ -3401,14 +3412,17 @@ async function editAppConfig(appCode) {
 
 // 渲染编辑弹窗中的数据源表格
 function renderDsTable() {
-  const wrap = document.getElementById("edit-ds-table-wrap");
+  // 根据模式选择渲染容器
+  const wrapId = _dsMode === "debug" ? "debug-ds-table-wrap" : "edit-ds-table-wrap";
+  const wrap = document.getElementById(wrapId);
   if (!wrap) return;
-  if (!_editBoundDs.length) {
+  const dsList = _curBoundDs();
+  if (!dsList.length) {
     wrap.innerHTML = `<div class="ds-empty" style="text-align:center;padding:32px 20px;color:var(--text-tertiary);font-size:13px;border:1px solid var(--border-color);border-radius:8px;">暂无数据源，请点击上方按钮添加</div>`;
     return;
   }
   let html = `<table class="ds-bound-table"><thead><tr><th>数据源名称</th><th>数据源类型</th><th style="width:200px">操作</th></tr></thead><tbody>`;
-  _editBoundDs.forEach((ds, idx) => {
+  dsList.forEach((ds, idx) => {
     const dbTypeLabel = ds.dbType === 4 ? "Neo4j" : "MySQL";
     const tagClass = ds.dbType === 4 ? "ds-tag-neo4j" : "ds-tag-mysql";
     html += `<tr>
@@ -3427,7 +3441,7 @@ function renderDsTable() {
 
 // 从编辑弹窗中删除已选数据源
 function removeBoundDs(idx) {
-  _editBoundDs.splice(idx, 1);
+  _curBoundDs().splice(idx, 1);
   renderDsTable();
 }
 
@@ -3455,8 +3469,8 @@ async function showSelectDsModal() {
     toast("获取数据源列表失败: " + e.message, "error");
     return;
   }
-  // 初始化已勾选 = 当前已绑定的
-  _selectDsChecked = new Set(_editBoundDs.map(ds => ds.id));
+  // 初始化已勾选 = 当前模式已绑定的
+  _selectDsChecked = new Set(_curBoundDs().map(ds => ds.id));
   _selectDsPage = 1;
   _selectDsFiltered = [..._selectDsAll];
 
@@ -3566,16 +3580,18 @@ function _selectDsGoPage(page) {
 }
 
 async function _confirmSelectDs() {
-  // 找出新勾选的数据源（不在 _editBoundDs 中的）
-  const existingIds = new Set(_editBoundDs.map(ds => ds.id));
+  // 找出新勾选的数据源（不在当前已绑定列表中的）
+  const boundDs = _curBoundDs();
+  const existingIds = new Set(boundDs.map(ds => ds.id));
   for (const dsId of _selectDsChecked) {
     if (existingIds.has(dsId)) continue;
     const ds = _selectDsAll.find(d => d.id === dsId);
     if (ds) {
-      _editBoundDs.push({ ...ds, tableNames: [] });
+      boundDs.push({ ...ds, tableNames: [] });
     }
   }
-  closeModal2Direct();  // 只关第二层弹窗，编辑弹窗保持不变
+  _setCurBoundDs(boundDs);
+  closeModal2Direct();  // 只关第二层弹窗，底层保持不变
   renderDsTable();
 }
 
@@ -3588,7 +3604,7 @@ let _dsEditColumnInfo = {};    // tableName → [{columnName, comment}]
 
 function showDsEditPage(idx) {
   _dsEditCurrentIdx = idx;
-  const ds = _editBoundDs[idx];
+  const ds = _curBoundDs()[idx];
   if (!ds) return;
   _dsEditTables = [];
   _dsEditSelectedTables = new Set(ds.tableNames || []);
@@ -3613,7 +3629,7 @@ function hideDsEditPage() {
 }
 
 async function dsEditTestConnection() {
-  const ds = _editBoundDs[_dsEditCurrentIdx];
+  const ds = _curBoundDs()[_dsEditCurrentIdx];
   if (!ds) return;
   const statusEl = document.getElementById("ds-edit-status");
   statusEl.textContent = "连接中...";
@@ -3686,7 +3702,7 @@ async function _renderDsEditRightPanel(tableName) {
 
   // 获取列信息
   if (!_dsEditColumnInfo[tableName]) {
-    const ds = _editBoundDs[_dsEditCurrentIdx];
+    const ds = _curBoundDs()[_dsEditCurrentIdx];
     try {
       const resp = await api("POST", "/knowledge/llm/userDataSource/table/getComments/v1", { id: ds.id, tableName: tableName });
       _dsEditColumnInfo[tableName] = (resp.data || []);
@@ -3725,7 +3741,8 @@ async function _renderDsEditRightPanel(tableName) {
 }
 
 async function dsEditSaveTableComment(tableName) {
-  const ds = _editBoundDs[_editBoundDs.findIndex((d, i) => i === _dsEditCurrentIdx)];
+  const dsList = _curBoundDs();
+  const ds = dsList[_dsEditCurrentIdx];
   if (!ds) return;
   const tableDesc = document.getElementById("ds-edit-table-desc")?.value || "";
   const colInputs = document.querySelectorAll(".ds-field-comment");
@@ -3757,10 +3774,12 @@ async function dsEditSaveTableComment(tableName) {
 }
 
 async function dsEditSave() {
-  // 更新 _editBoundDs 中当前数据源的 tableNames
-  if (_dsEditCurrentIdx >= 0 && _dsEditCurrentIdx < _editBoundDs.length) {
-    _editBoundDs[_dsEditCurrentIdx].tableNames = Array.from(_dsEditSelectedTables);
+  // 更新当前模式中当前数据源的 tableNames
+  const dsList = _curBoundDs();
+  if (_dsEditCurrentIdx >= 0 && _dsEditCurrentIdx < dsList.length) {
+    dsList[_dsEditCurrentIdx].tableNames = Array.from(_dsEditSelectedTables);
   }
+  _setCurBoundDs(dsList);
   hideDsEditPage();
   toast("已保存", "success");
 }
@@ -4051,14 +4070,16 @@ async function resumeAppSession(convUid, summary) {
 let _debugPreviewAppCode = "";   // 当前调试的应用 app_code
 let _debugPreviewSession = "";   // 会话 ID（空=新建）
 let _debugPreviewAbort = null;  // AbortController
+let _debugBoundDs = [];          // 调试预览中选中的数据源
 
 async function showDebugPreview(appCode, appName) {
   _debugPreviewAppCode = appCode;
   _debugPreviewSession = "";  // 进入时新建会话
+  _debugBoundDs = [];  // 清空调试数据源
+  _dsMode = "debug";  // 切到调试模式
 
-  // 获取模型列表 + 应用详情（显示绑定信息）
+  // 获取模型列表 + 应用详情（回显已绑定的数据源）
   let modelOptions = "";
-  let contextParts = [];
   try {
     const [mResp, detailResp] = await Promise.all([
       api("POST", "/openPlatform/api/v1/model/config/page", { currentPage: 1, pageSize: 1000 }),
@@ -4070,12 +4091,27 @@ async function showDebugPreview(appCode, appName) {
     const currentModel = modelConfig.modelType || "";
     modelOptions = models.map(m => `<option value="${escapeAttr(m.modelName)}" ${m.modelName === currentModel ? "selected" : ""}>${escapeHtml(m.modelName)}</option>`).join("");
 
-    // 显示应用绑定信息
+    // 回显应用已绑定的数据源到调试预览
     const dsConfigs = (d.varMap?.dataSourceConfigs) || [];
-    if (dsConfigs.length) contextParts.push(`📊 ${dsConfigs.map(ds => ds.dbName).join(", ")}`);
-    if (d.settingDescription) contextParts.push(`📝 已配置提示词`);
-    const ctxEl = document.getElementById("debug-preview-context");
-    if (ctxEl) ctxEl.textContent = contextParts.join(" | ") || "无绑定信息";
+    if (dsConfigs.length) {
+      // 获取已选数据源详情
+      const ids = dsConfigs.map(ds => ds.databaseId).filter(Boolean);
+      if (ids.length) {
+        try {
+          const boundResp = await api("POST", "/knowledge/llm/userDataSource/get/dbNamesByIds/v1", { ids });
+          const boundDsDetail = (boundResp.data || []);
+          const boundTablesMap = {};
+          dsConfigs.forEach(ds => { if (ds.dbName && ds.tableNames) boundTablesMap[ds.dbName] = ds.tableNames; });
+          _debugBoundDs = boundDsDetail.map(bd => ({
+            ...bd,
+            tableNames: boundTablesMap[bd.dbName || bd.name] || [],
+          }));
+        } catch {}
+      }
+    }
+
+    // 更新上下文展示
+    _updateDebugContext();
 
     // 回显提示词
     const promptEl = document.getElementById("debug-preview-prompt");
@@ -4093,7 +4129,20 @@ async function showDebugPreview(appCode, appName) {
   const input = document.getElementById("debug-preview-input");
   if (input) { input.value = ""; input.style.height = "auto"; }
   document.getElementById("debug-preview-page").style.display = "flex";
+  // 渲染数据源表格
+  setTimeout(() => renderDsTable(), 50);
   if (input) input.focus();
+}
+
+// 更新调试预览的上下文展示（数据源列表）
+function _updateDebugContext() {
+  const ctxEl = document.getElementById("debug-preview-context");
+  if (!ctxEl) return;
+  const parts = [];
+  if (_debugBoundDs.length) parts.push(`📊 ${_debugBoundDs.map(ds => ds.dbName || ds.name).join(", ")}`);
+  const promptEl = document.getElementById("debug-preview-prompt");
+  if (promptEl && promptEl.value.trim()) parts.push("📝 自定义提示词");
+  ctxEl.textContent = parts.join(" | ") || "使用应用配置";
 }
 
 function hideDebugPreview() {
@@ -4101,6 +4150,8 @@ function hideDebugPreview() {
   if (_debugPreviewAbort) { _debugPreviewAbort.abort(); _debugPreviewAbort = null; }
   _debugPreviewAppCode = "";
   _debugPreviewSession = "";
+  _debugBoundDs = [];
+  _dsMode = "edit";  // 恢复默认模式
   document.getElementById("debug-preview-page").style.display = "none";
 }
 
@@ -4169,6 +4220,12 @@ async function sendDebugQuestion() {
   // 构造 chatWithDb 请求体
   const model = document.getElementById("debug-preview-model")?.value || "";
   const prompt = document.getElementById("debug-preview-prompt")?.value || "";
+  // 从调试预览选中的数据源构造 dataSourceConfigs
+  const dataSourceConfigs = _debugBoundDs.map(ds => ({
+    databaseId: ds.id || 0,
+    dbName: ds.dbName || ds.name || "",
+    tableNames: ds.tableNames || [],
+  }));
   const body = {
     question,
     instanceId: _debugPreviewAppCode,
@@ -4178,7 +4235,10 @@ async function sendDebugQuestion() {
     tableNames: [],
     session: _debugPreviewSession || "",
     prompt: prompt || "",
+    dataSourceConfigs: dataSourceConfigs,
   };
+  // 更新上下文展示
+  _updateDebugContext();
 
   // 创建 AI 消息占位
   const aiTextEl = _appendDebugMessage("ai", '<div class="typing-indicator"><span></span><span></span><span></span></div>');

@@ -3413,7 +3413,10 @@ data: [DONE]
 
 **前端对接**：
 - 应用管理页卡片新增"调试"按钮 → 打开全屏调试预览页面
-- 调试预览页面布局：顶部模型选择+重新开始按钮，中间消息区（复用 React Agent SSE 渲染），底部输入框
+- 调试预览页面布局：顶部模型选择+重新开始按钮，中间数据源选择区+消息区（复用 React Agent SSE 渲染），底部输入框
+- 数据源选择区：复用第一部分编辑弹窗的"选择数据源"弹窗（showSelectDsModal）和"数据源编辑"全屏页面（showDsEditPage），通过 `_dsMode` 标志区分当前操作上下文
+- 进入调试时自动回显应用已绑定的数据源（从 agent/detail 的 dataSourceConfigs 加载到 `_debugBoundDs`）
+- `dataSourceConfigs` 字段：非空时覆盖应用绑定的数据源，空则使用应用配置
 - 提示词输入框：可覆盖应用配置的提示词（`prompt` 字段）
 - "重新开始"按钮：清空 `session` 字段 → 后端新建会话（不带上下文 ID）
 - SSE 渲染逻辑：复用 `sendReactAgent` 的 step.start/step.meta/step.chunk/step.final 渲染，适配调试预览的 DOM 容器

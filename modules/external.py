@@ -881,6 +881,7 @@ class ChatWithDbRequest(BaseModel):
     tableNames: List[str] = Field(default_factory=list, description="临时预选表（覆盖应用配置的预选表）")
     session: str = Field("", description="会话 ID（空=新建会话=重新开始）")
     prompt: str = Field("", description="临时提示词文本（覆盖应用配置的提示词，插入到 system prompt 指定位置）")
+    dataSourceConfigs: List[dict] = Field(default_factory=list, description="临时选中的数据源配置（覆盖应用绑定的数据源），格式 [{databaseId, dbName, tableNames}]")
 
 
 @router.post("/knowledge/llm/ai-analyze/chatWithDb/v1")
@@ -958,7 +959,18 @@ async def chat_with_db(req: ChatWithDbRequest):
         # 4. 覆盖逻辑：请求参数覆盖应用配置
         # model 覆盖
         final_model = req.model or model_name or DEFAULT_MODEL
-        # tableNames 覆盖：如果请求传了 tableNames，覆盖第一个数据源的预选表
+        # dataSourceConfigs 覆盖：如果请求传了数据源配置，完全替换应用绑定的数据源
+        if req.dataSourceConfigs:
+            db_names = []
+            db_tables = {}
+            for ds_cfg in req.dataSourceConfigs:
+                dbn = ds_cfg.get("dbName") or ""
+                if dbn:
+                    db_names.append(dbn)
+                    tbls = ds_cfg.get("tableNames") or []
+                    if tbls:
+                        db_tables[dbn] = [str(t) for t in tbls]
+        # tableNames 覆盖：如果请求传了 tableNames 且有数据源，覆盖第一个数据源的预选表
         if req.tableNames and db_names:
             db_tables[db_names[0]] = [str(t) for t in req.tableNames]
         # prompt 覆盖：前端传入的原始提示词文本优先
