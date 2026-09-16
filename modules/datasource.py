@@ -190,6 +190,46 @@ async def delete_one(datasource_id: str):
 # ---------------------------------------------------------------------------
 # Serve 通用 HTTP 调用（SDK 未封装的接口）
 # ---------------------------------------------------------------------------
+class DatasourceCommentRequest(BaseModel):
+    comment: str = Field("", description="数据库描述/备注")
+
+
+@router.put("/{datasource_id}/comment")
+async def update_comment(datasource_id: str, req: DatasourceCommentRequest):
+    """更新数据源的数据库描述（comment）。
+
+    轻量接口：直接 UPDATE connect_config.comment，只动这一个字段，
+    不走 PUT /datasources 整体更新（避免误改连接信息）。
+    """
+    try:
+        import pymysql
+        import os
+        conn = pymysql.connect(
+            host=os.getenv("MYSQL_HOST", "db-gpt-db-1"),
+            port=int(os.getenv("MYSQL_PORT", "3306")),
+            user=os.getenv("MYSQL_USER", "root"),
+            password=os.getenv("MYSQL_PASSWORD", "aa123456"),
+            database=os.getenv("MYSQL_DATABASE", "dbgpt"),
+            charset="utf8mb4",
+        )
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE connect_config SET comment = %s, gmt_modified = NOW() WHERE id = %s",
+                    (req.comment, int(datasource_id)),
+                )
+            conn.commit()
+            if cursor.rowcount == 0:
+                raise HTTPException(404, detail=f"数据源 {datasource_id} 不存在")
+        finally:
+            conn.close()
+        return {"ok": True, "id": datasource_id, "comment": req.comment}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, detail=f"更新数据库描述失败: {e}")
+
+
 @router.get("/types/list")
 async def list_types():
     """查看支持的数据源类型。

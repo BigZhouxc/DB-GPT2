@@ -1378,7 +1378,11 @@ async function showSchemaModal(dsId) {
   if (!ds) { toast("数据源不存在", "error"); return; }
 
   openModal(`编辑注释 — ${ds.db_name} (${ds.db_type})`,
-    `<div id="schema-loading" style="text-align:center;padding:40px"><div class="loading-spinner"></div><p>正在加载表结构...</p></div>`,
+    `<div class="form-field">
+      <label>数据库描述（存于数据源配置，作用于全库检索引导）</label>
+      <input class="input" id="schema-db-comment" value="${escapeAttr(ds.comment || "")}" placeholder="输入数据库描述，如：双11电商交易数据">
+    </div>
+    <div id="schema-loading" style="text-align:center;padding:40px"><div class="loading-spinner"></div><p>正在加载表结构...</p></div>`,
     [
       { class: "btn btn-sm", action: "closeModalDirect()", text: "取消" },
       { class: "btn btn-primary btn-sm", action: `saveSchemaComments(${dsId})`, text: "保存全部" },
@@ -1487,7 +1491,24 @@ async function saveSchemaComments(dsId) {
   });
 
   const total = tableComments.length + columnComments.length;
-  if (total === 0) { toast("没有变更", "info"); return; }
+
+  // ★ 数据库描述（comment）单独保存（轻量接口，只动 comment 字段）
+  const dbCommentInput = document.getElementById("schema-db-comment");
+  if (dbCommentInput) {
+    const newDbComment = dbCommentInput.value;
+    if (newDbComment !== (State.datasourceList.find(d => d.id == dsId)?.comment || "")) {
+      try {
+        await api("PUT", `/datasources/${dsId}/comment`, { comment: newDbComment });
+        const dsLocal = State.datasourceList.find(d => d.id == dsId);
+        if (dsLocal) dsLocal.comment = newDbComment;
+        toast("数据库描述已保存", "success");
+      } catch (e) {
+        toast("数据库描述保存失败: " + e.message, "error");
+      }
+    }
+  }
+
+  if (total === 0) { if (!dbCommentInput) toast("没有变更", "info"); else closeModalDirect(); return; }
 
   toast(`正在保存 ${total} 项变更...`, "info");
   let okCount = 0, failCount = 0;
@@ -3082,7 +3103,7 @@ async function loadApps() {
 }
 
 async function showCreateAppModal() {
-  const dsCheckboxes = State.datasourceList.map(d => `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(d.db_name)}" onchange="updateAppDbSummary()"> <span>${escapeHtml(d.db_name)}</span> <span class="tag tag-blue">${escapeHtml(d.db_type)}</span></label>`).join("");
+  const dsCheckboxes = State.datasourceList.map(d => `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(d.db_name)}" data-ds-id="${d.id}" onchange="onAppDsCheck(this, 'create')"> <span>${escapeHtml(d.db_name)}</span> <span class="tag tag-blue">${escapeHtml(d.db_type)}</span></label><div class="app-table-picker" id="create-tables-${d.id}" style="display:none;margin:2px 0 6px 24px;"></div>`).join("");
   const modelOptions = (State.modelList || []).map(m => `<option value="${escapeAttr(m.model_name)}">${escapeHtml(m.model_name)}</option>`).join("");
   // 直接获取提示词列表（不依赖 preloadData 缓存）
   let promptOptions = "";
@@ -3103,7 +3124,7 @@ async function showCreateAppModal() {
     <div class="form-field" style="display:none;"><label>对话模式</label><select class="select" id="app-team-mode">
       <option value="chat_react_agent" selected>ReAct Agent（默认）</option>
     </select></div>
-    <div class="form-field"><label>📊 绑定数据源（可多选，创建后不可变）</label><div class="checkbox-group" id="app-databases">${dsCheckboxes}</div><div class="form-hint" id="app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">未选择数据源</div></div>
+    <div class="form-field"><label>📊 绑定数据源（可多选，可勾选预选数据表）</label><div class="checkbox-group" id="app-databases">${dsCheckboxes}</div><div class="form-hint" id="app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">未选择数据源</div></div>
     <div class="form-field"><label>📚 绑定知识库（创建后不可变）</label><select class="select" id="app-knowledge"><option value="">不绑定</option>${(State.knowledgeSpaces || []).map(k => { const name = typeof k === "string" ? k : (k.name || k.space_name || ""); return `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`; }).join("")}</select></div>
     <div class="form-field"><label>模型</label><select class="select" id="app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
     <div class="form-field"><label>📝 自定义提示词</label><select class="select" id="app-prompt"><option value="">不添加</option>${promptOptions}</select>
@@ -3128,6 +3149,59 @@ function updateAppDbSummary() {
   }
 }
 
+// === 应用数据源勾选 → 展开/收起该库的表选择器（创建与编辑共用） ===
+const _appTablePickerCache = {};  // dsId → tables [{table_name, table_comment}]
+async function onAppDsCheck(checkbox, mode) {
+  const dsId = checkbox.getAttribute("data-ds-id");
+  const picker = document.getElementById(`${mode}-tables-${dsId}`);
+  // 同步摘要（创建弹窗）
+  if (mode === "create") updateAppDbSummary(); else updateEditAppDbSummary();
+  if (!picker) return;
+  if (!checkbox.checked) { picker.style.display = "none"; return; }
+  picker.style.display = "block";
+  if (picker.dataset.loaded === "1") return;  // 已加载过，保留用户勾选状态
+  picker.innerHTML = `<div style="color:var(--text-tertiary);font-size:12px;padding:4px">加载表列表...</div>`;
+  try {
+    let tables = _appTablePickerCache[dsId];
+    if (!tables) {
+      const data = await api("GET", `/datasources/${dsId}/schema`);
+      tables = (data.schema?.tables || []).map(t => ({ table_name: t.table_name, table_comment: t.table_comment || "" }));
+      _appTablePickerCache[dsId] = tables;
+    }
+    if (!tables.length) { picker.innerHTML = `<div style="color:var(--text-tertiary);font-size:12px;padding:4px">该库没有数据表</div>`; picker.dataset.loaded = "1"; return; }
+    // 编辑模式：回显应用已保存的预选表
+    let preset = [];
+    try { preset = JSON.parse(picker.dataset.preset || "[]"); } catch {}
+    const presetSet = new Set(preset);
+    picker.innerHTML = `<div class="form-hint" style="margin:2px 0">可选：勾选该库要预选的数据表（不勾 = 问答时 LLM 自动选表）</div>` +
+      `<label class="checkbox-item" style="font-size:12px"><input type="checkbox" onchange="toggleAllTables(this, '${mode}', ${dsId})"> <span><strong>全选</strong></span></label>` +
+      tables.map(t => `<label class="checkbox-item" style="font-size:12px" title="${escapeAttr(t.table_comment || t.table_name)}"><input type="checkbox" class="app-table-cb" data-table="${escapeAttr(t.table_name)}" value="${escapeAttr(t.table_name)}" ${presetSet.has(t.table_name) ? "checked" : ""}> <span>${escapeHtml(t.table_name)}</span>${t.table_comment ? ` <span style="color:var(--text-tertiary)">${escapeHtml(t.table_comment.slice(0, 24))}</span>` : ""}</label>`).join("");
+    picker.dataset.loaded = "1";
+  } catch (e) {
+    picker.innerHTML = `<div style="color:var(--danger);font-size:12px;padding:4px">表列表加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function toggleAllTables(master, mode, dsId) {
+  const picker = document.getElementById(`${mode}-tables-${dsId}`);
+  if (!picker) return;
+  picker.querySelectorAll(".app-table-cb").forEach(cb => { cb.checked = master.checked; });
+}
+
+// 收集弹窗中的预选表 {库名: [表名]}
+function collectAppTableHints(mode) {
+  const result = {};
+  document.querySelectorAll(`#${mode === "create" ? "app-databases" : "edit-app-databases"} input[type="checkbox"]:checked`).forEach(cb => {
+    const dsId = cb.getAttribute("data-ds-id");
+    const dbName = cb.value;
+    const picker = document.getElementById(`${mode}-tables-${dsId}`);
+    if (!picker) return;
+    const tables = Array.from(picker.querySelectorAll(".app-table-cb:checked")).map(c => c.value);
+    if (tables.length) result[dbName] = tables;
+  });
+  return result;
+}
+
 async function createApp() {
   const name = document.getElementById("app-name").value;
   if (!name) { toast("应用名称不能为空", "error"); return; }
@@ -3139,6 +3213,7 @@ async function createApp() {
     team_mode: document.getElementById("app-team-mode").value,  // 字段名兼容后端
     chat_mode: document.getElementById("app-team-mode").value,
     database_names: selectedDbs,
+    database_tables: collectAppTableHints("create"),
     knowledge_space: document.getElementById("app-knowledge").value,
     model: document.getElementById("app-model").value,
     prompt_template: document.getElementById("app-prompt").value,
@@ -3198,7 +3273,8 @@ async function editAppConfig(appCode) {
       }).join("");
     } catch {}
     const boundDbs = new Set(res.database_names || (res.database_name ? res.database_name.split(",").map(s => s.trim()) : []));
-    const dsCheckboxes = State.datasourceList.map(d => `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(d.db_name)}" ${boundDbs.has(d.db_name) ? "checked" : ""} onchange="updateEditAppDbSummary()"> <span>${escapeHtml(d.db_name)}</span> <span class="tag tag-blue">${escapeHtml(d.db_type)}</span></label>`).join("");
+    const boundTables = res.database_tables || {};
+    const dsCheckboxes = State.datasourceList.map(d => `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(d.db_name)}" data-ds-id="${d.id}" ${boundDbs.has(d.db_name) ? "checked" : ""} onchange="onAppDsCheck(this, 'edit')"> <span>${escapeHtml(d.db_name)}</span> <span class="tag tag-blue">${escapeHtml(d.db_type)}</span></label><div class="app-table-picker" id="edit-tables-${d.id}" style="display:none;margin:2px 0 6px 24px;" data-preset='${boundTables[d.db_name] ? escapeAttr(JSON.stringify(boundTables[d.db_name])) : ""}'></div>`).join("");
     const kbOptions = (State.knowledgeSpaces || []).map(k => {
       const name = typeof k === "string" ? k : (k.name || k.space_name || "");
       return `<option value="${escapeAttr(name)}" ${name === res.knowledge_space ? "selected" : ""}>${escapeHtml(name)}</option>`;
@@ -3210,17 +3286,21 @@ async function editAppConfig(appCode) {
       <div class="form-field" style="display:none;"><label>对话模式</label><select class="select" id="edit-app-chat-mode">
         <option value="chat_react_agent" selected>ReAct Agent（默认）</option>
       </select></div>
-      <div class="form-field"><label>📊 数据源（可多选）</label><div class="checkbox-group" id="edit-app-databases">${dsCheckboxes}</div><div class="form-hint" id="edit-app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">${boundDbs.size ? `已选 ${boundDbs.size} 个` : "未选择数据源"}</div></div>
+      <div class="form-field"><label>📊 数据源（可多选，可勾选预选数据表）</label><div class="checkbox-group" id="edit-app-databases">${dsCheckboxes}</div><div class="form-hint" id="edit-app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">${boundDbs.size ? `已选 ${boundDbs.size} 个` : "未选择数据源"}</div></div>
       <div class="form-field"><label>📚 知识库</label><select class="select" id="edit-app-knowledge"><option value="">不绑定</option>${kbOptions}</select></div>
       <div class="form-field"><label>模型</label><select class="select" id="edit-app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
       <div class="form-field"><label>📝 自定义提示词</label><select class="select" id="edit-app-prompt"><option value="">不添加</option>${promptOptions}</select>
       <div class="form-hint" style="margin-top:4px">💡 追加到默认 system prompt 的「Please Solve this task:」之前，作为业务约束/上下文。ReAct 格式约束保持不变。</div></div>
       <div class="form-field"><label>推荐问题（每行一个）</label><textarea class="input" id="edit-app-questions" rows="3">${(app.recommend_questions || []).join("\n")}</textarea></div>
-      <div class="form-hint">💡 可修改数据源、知识库、对话模式、模型和推荐问题。</div>
+      <div class="form-hint">💡 可修改数据源、预选数据表、知识库、对话模式、模型和推荐问题。</div>
     `, [
       { text: "取消", class: "btn", action: "closeModalDirect()" },
       { text: "保存", class: "btn btn-primary", action: `submitEditAppConfig('${appCode}')` },
     ]);
+    // ★ 已勾选的数据源自动展开表选择器（回显预选表）
+    setTimeout(() => {
+      document.querySelectorAll('#edit-app-databases input[type="checkbox"]:checked').forEach(cb => onAppDsCheck(cb, "edit"));
+    }, 50);
   } catch (e) { toast("获取详情失败: " + e.message, "error"); }
 }
 
@@ -3239,6 +3319,7 @@ async function submitEditAppConfig(appCode) {
     app_describe: document.getElementById("edit-app-describe").value,
     chat_mode: document.getElementById("edit-app-chat-mode").value,
     database_names: selectedDbs,
+    database_tables: collectAppTableHints("edit"),
     knowledge_space: document.getElementById("edit-app-knowledge").value,
     model: document.getElementById("edit-app-model").value,
     prompt_template: document.getElementById("edit-app-prompt").value,

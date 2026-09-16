@@ -434,6 +434,7 @@ class QnAAgent:
         temperature: float = 0.6,
         max_new_tokens: int = 4000,
         prompt_code: Optional[str] = None,
+        preset_table_hints: Optional[dict] = None,
     ) -> AsyncGenerator[str, None]:
         """React Agent 流式问答（SSE 事件流）。
 
@@ -458,6 +459,8 @@ class QnAAgent:
             connector_ids: MCP 连接器 ID 列表
             database_name: 数据库名（优先级高于 chat_param）
             database_names: 多数据源列表（App 绑定多个时传入，触发前置选择）
+            preset_table_hints: 应用预选数据表 {库名: [表名]}（来自应用绑定配置。
+                命中时跳过 LLM 选表工具直接使用，仍会推送 table_select 卡片告知来源）
             file_ids: 会话附件文件 ID 列表
             temperature / max_new_tokens: LLM 采样参数
 
@@ -480,6 +483,8 @@ class QnAAgent:
         # ========== 前置编排：多数据源智能选择 ==========
         selected_ds = None
         table_hints = None
+        # 应用预选表：确定最终选中库后，若该库有预选表则跳过 LLM 选表工具
+        _preset_hints = preset_table_hints if isinstance(preset_table_hints, dict) else None
 
         if database_names and len(database_names) > 1:
             orchestrator = ToolOrchestrator(model=self.model)
@@ -517,6 +522,96 @@ class QnAAgent:
 
             # --- 工具 2: 数据表选择 ---
             if selected_ds:
+                _preset = (_preset_hints or {}).get(selected_ds) or []
+                if _preset:
+                    # ★ 应用已预选该库的数据表：跳过 LLM 选表，直接使用
+                    table_hints = {
+                        "tables": [str(t) for t in _preset],
+                        "fields": {},
+                        "reason": f"应用配置预选了 {len(_preset)} 张数据表，直接使用",
+                        "preset": True,
+                    }
+                    yield make_tool_sse("step.start", "table_select", {
+                        "id": "tool-tbl-select",
+                        "tool_name": "数据表选择",
+                        "thought": f"应用配置预选了数据表",
+                    })
+                    yield make_tool_sse("step.meta", "table_select", {
+                        "id": "tool-tbl-select",
+                        "tool_name": "数据表选择",
+                        "result": table_hints,
+                    })
+                    yield make_tool_sse("step.done", "table_select", {"id": "tool-tbl-select"})
+                else:
+                    yield make_tool_sse("step.start", "table_select", {
+                        "id": "tool-tbl-select",
+                        "tool_name": "数据表选择",
+                        "thought": f"从数据源 {selected_ds} 中选择相关数据表",
+                    })
+
+                    try:
+                        tbl_result = await orchestrator.select_tables(question, selected_ds)
+                        table_hints = tbl_result
+                        yield make_tool_sse("step.meta", "table_select", {
+                            "id": "tool-tbl-select",
+                            "tool_name": "数据表选择",
+                            "result": tbl_result,
+                        })
+                    except Exception as e:
+                        tbl_result = {
+                            "tables": [],
+                            "fields": {},
+                            "reason": f"工具异常: {e}",
+                            "fallback": True,
+                        }
+                        yield make_tool_sse("step.meta", "table_select", {
+                            "id": "tool-tbl-select",
+                            "tool_name": "数据表选择",
+                            "result": tbl_result,
+                            "error": str(e),
+                        })
+
+                    yield make_tool_sse("step.done", "table_select", {"id": "tool-tbl-select"})
+
+        elif database_names and len(database_names) == 1:
+            # 单数据源：跳过数据源选择（无选择意义），但仍执行数据表选择工具
+            selected_ds = database_names[0]
+            orchestrator = ToolOrchestrator(model=self.model)
+
+            yield make_tool_sse("step.start", "datasource_select", {
+                "id": "tool-ds-select",
+                "tool_name": "数据源选择",
+                "thought": "仅有一个数据源，直接使用",
+            })
+            yield make_tool_sse("step.meta", "datasource_select", {
+                "id": "tool-ds-select",
+                "tool_name": "数据源选择",
+                "result": {"datasource": selected_ds, "reason": "仅有一个数据源，直接使用", "fallback": True},
+            })
+            yield make_tool_sse("step.done", "datasource_select", {"id": "tool-ds-select"})
+
+            # --- 工具 2: 数据表选择（单库也要选表） ---
+            _preset = (_preset_hints or {}).get(selected_ds) or []
+            if _preset:
+                # ★ 应用已预选该库的数据表：跳过 LLM 选表，直接使用
+                table_hints = {
+                    "tables": [str(t) for t in _preset],
+                    "fields": {},
+                    "reason": f"应用配置预选了 {len(_preset)} 张数据表，直接使用",
+                    "preset": True,
+                }
+                yield make_tool_sse("step.start", "table_select", {
+                    "id": "tool-tbl-select",
+                    "tool_name": "数据表选择",
+                    "thought": "应用配置预选了数据表",
+                })
+                yield make_tool_sse("step.meta", "table_select", {
+                    "id": "tool-tbl-select",
+                    "tool_name": "数据表选择",
+                    "result": table_hints,
+                })
+                yield make_tool_sse("step.done", "table_select", {"id": "tool-tbl-select"})
+            else:
                 yield make_tool_sse("step.start", "table_select", {
                     "id": "tool-tbl-select",
                     "tool_name": "数据表选择",
@@ -546,54 +641,6 @@ class QnAAgent:
                     })
 
                 yield make_tool_sse("step.done", "table_select", {"id": "tool-tbl-select"})
-
-        elif database_names and len(database_names) == 1:
-            # 单数据源：跳过数据源选择（无选择意义），但仍执行数据表选择工具
-            selected_ds = database_names[0]
-            orchestrator = ToolOrchestrator(model=self.model)
-
-            yield make_tool_sse("step.start", "datasource_select", {
-                "id": "tool-ds-select",
-                "tool_name": "数据源选择",
-                "thought": "仅有一个数据源，直接使用",
-            })
-            yield make_tool_sse("step.meta", "datasource_select", {
-                "id": "tool-ds-select",
-                "tool_name": "数据源选择",
-                "result": {"datasource": selected_ds, "reason": "仅有一个数据源，直接使用", "fallback": True},
-            })
-            yield make_tool_sse("step.done", "datasource_select", {"id": "tool-ds-select"})
-
-            # --- 工具 2: 数据表选择（单库也要选表） ---
-            yield make_tool_sse("step.start", "table_select", {
-                "id": "tool-tbl-select",
-                "tool_name": "数据表选择",
-                "thought": f"从数据源 {selected_ds} 中选择相关数据表",
-            })
-
-            try:
-                tbl_result = await orchestrator.select_tables(question, selected_ds)
-                table_hints = tbl_result
-                yield make_tool_sse("step.meta", "table_select", {
-                    "id": "tool-tbl-select",
-                    "tool_name": "数据表选择",
-                    "result": tbl_result,
-                })
-            except Exception as e:
-                tbl_result = {
-                    "tables": [],
-                    "fields": {},
-                    "reason": f"工具异常: {e}",
-                    "fallback": True,
-                }
-                yield make_tool_sse("step.meta", "table_select", {
-                    "id": "tool-tbl-select",
-                    "tool_name": "数据表选择",
-                    "result": tbl_result,
-                    "error": str(e),
-                })
-
-            yield make_tool_sse("step.done", "table_select", {"id": "tool-tbl-select"})
 
         # ========== 委托 DB-GPT react-agent ==========
         # ★ user_input 不再拼接 [Database:]/[Tables:] 前缀（避免入库并显示在用户消息中），

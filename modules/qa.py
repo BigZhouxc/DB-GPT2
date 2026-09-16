@@ -393,6 +393,10 @@ class ReactAgentRequest(BaseModel):
         None,
         description="会话附件文件 ID 列表（可选，来自 POST /files/upload）。"
     )
+    table_hints: Optional[dict] = Field(
+        None,
+        description="预选数据表 {库名: [表名]}（可选）。命中当前选中库时跳过 LLM 选表工具直接使用。"
+    )
     session: str = Field("", description="会话 ID（可选，缺省自动管理）")
     temperature: float = Field(0.6, description="温度参数")
     max_new_tokens: int = Field(4000, description="最大 token 数")
@@ -443,6 +447,7 @@ async def ask_react_agent(req: ReactAgentRequest):
                 temperature=req.temperature,
                 max_new_tokens=req.max_new_tokens,
                 prompt_code=req.prompt_code,
+                preset_table_hints=req.table_hints,
             ):
                 yield sse_line
         except Exception as e:

@@ -36,6 +36,7 @@ class AppCreateRequest(BaseModel):
     chat_mode: str = Field("chat_react_agent", description="对话模式：chat_normal/chat_with_db_execute/chat_with_db_qa/chat_dashboard/chat_excel/chat_knowledge/chat_flow/chat_react_agent/chat_knowledge_agent")
     database_name: str = Field("", description="绑定的数据源（单个，兼容旧版。优先使用 database_names）")
     database_names: List[str] = Field(default_factory=list, description="绑定的数据源列表（多选，支持多数据源智能选择）")
+    database_tables: dict = Field(default_factory=dict, description="预选数据表 {库名: [表名]}（可选，问答时跳过 LLM 选表直接使用）")
     knowledge_space: str = Field("", description="绑定的知识库（创建后不可变）")
     model: str = Field(DEFAULT_MODEL, description="模型")
     temperature: float = Field(0.6, description="温度")
@@ -51,6 +52,7 @@ class AppEditRequest(BaseModel):
     chat_mode: str = Field("chat_react_agent", description="对话模式")
     database_name: str = Field("", description="数据源（编辑时忽略，保持原值）")
     database_names: List[str] = Field(default_factory=list, description="数据源列表（编辑时忽略，保持原值）")
+    database_tables: dict = Field(default_factory=dict, description="预选数据表 {库名: [表名]}（空=保持原值）")
     knowledge_space: str = Field("", description="知识库（编辑时忽略，保持原值）")
     model: str = Field(DEFAULT_MODEL, description="模型")
     temperature: float = Field(0.6, description="温度")
@@ -134,8 +136,14 @@ def _build_app_body(req):
     resources = []
     # 多数据源绑定：优先使用 database_names，兼容单个 database_name
     db_names = req.database_names if req.database_names else ([req.database_name] if req.database_name else [])
+    # 预选数据表：{库名: [表名]}，写入资源 value 的 tables 字段（JSON 扩展键，DB-GPT 解析忽略）
+    db_tables = req.database_tables if isinstance(req.database_tables, dict) else {}
     for db_name in db_names:
-        resources.append({"type": "database", "name": f"数据源-{db_name}", "value": json.dumps({"name": "datasource", "db_name": db_name}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
+        tables = db_tables.get(db_name) or []
+        value = {"name": "datasource", "db_name": db_name}
+        if tables:
+            value["tables"] = [str(t) for t in tables]
+        resources.append({"type": "database", "name": f"数据源-{db_name}", "value": json.dumps(value, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
     if req.knowledge_space:
         resources.append({"type": "knowledge", "name": "知识库", "value": json.dumps({"name": "knowledge", "knowledge_space": req.knowledge_space}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
     # chat_mode 映射到 DB-GPT 的 team_mode + team_context
@@ -175,7 +183,7 @@ def _build_app_body(req):
     }
 
 def _extract_resources(app_detail):
-    res = {"database_name": "", "database_names": [], "knowledge_space": "", "model": "", "chat_mode": "chat_react_agent", "prompt_template": ""}
+    res = {"database_name": "", "database_names": [], "database_tables": {}, "knowledge_space": "", "model": "", "chat_mode": "chat_react_agent", "prompt_template": ""}
     # 从 team_context 提取 chat_mode
     tc = app_detail.get("team_context")
     if tc:
@@ -200,6 +208,9 @@ def _extract_resources(app_detail):
                 db_name = parsed.get("db_name") or rval
                 if db_name:
                     db_names.append(db_name)
+                    # 预选数据表（资源 value 的 tables 扩展键）
+                    if parsed.get("tables"):
+                        res["database_tables"][db_name] = [str(t) for t in parsed["tables"]]
                     # 兼容旧字段：第一个数据源作为 database_name
                     if not res["database_name"]:
                         res["database_name"] = db_name
@@ -338,10 +349,19 @@ async def edit_app(app_code: str, req: AppEditRequest):
         kb_name = req.knowledge_space if req.knowledge_space else old_res.get("knowledge_space", "")
         # prompt_template：空值保持原值
         pt_name = req.prompt_template if req.prompt_template else old_res.get("prompt_template", "")
+        # 预选数据表：传了新值用新值（按当前库列表过滤），空则保持原值
+        old_tables = old_res.get("database_tables") or {}
+        if req.database_tables:
+            db_tables = {db: [str(t) for t in (req.database_tables.get(db) or [])] for db in db_names if req.database_tables.get(db)}
+        else:
+            db_tables = {db: old_tables[db] for db in db_names if old_tables.get(db)}
         resources = []
         for db_name in db_names:
             if db_name:
-                resources.append({"type": "database", "name": f"数据源-{db_name}", "value": json.dumps({"name": "datasource", "db_name": db_name}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
+                value = {"name": "datasource", "db_name": db_name}
+                if db_tables.get(db_name):
+                    value["tables"] = db_tables[db_name]
+                resources.append({"type": "database", "name": f"数据源-{db_name}", "value": json.dumps(value, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
         if kb_name:
             resources.append({"type": "knowledge", "name": "知识库", "value": json.dumps({"name": "knowledge", "knowledge_space": kb_name}, ensure_ascii=False), "is_dynamic": False, "context": None, "version": "v2"})
 
@@ -459,6 +479,8 @@ async def chat_with_app(app_code: str, req: AppChatRequest):
         db_name = res.get("database_name", "")
         db_names = res.get("database_names", [])
         kb_name = res.get("knowledge_space", "")
+        # 应用预选数据表：只保留最终选中库的表（多库时选中哪个库用哪个库的表）
+        app_table_hints = res.get("database_tables") or {}
 
         async def gen():
             try:
@@ -476,6 +498,7 @@ async def chat_with_app(app_code: str, req: AppChatRequest):
                         file_ids=req.file_ids,
                         temperature=req.temperature or 0.6,
                         max_new_tokens=req.max_new_tokens or 4000,
+                        preset_table_hints=app_table_hints or None,
                     ):
                         yield sse_line
                 elif chat_mode in ("chat_knowledge_agent", "knowledge_agent"):
@@ -498,6 +521,7 @@ async def chat_with_app(app_code: str, req: AppChatRequest):
                         file_ids=req.file_ids,
                         temperature=req.temperature or 0.6,
                         max_new_tokens=req.max_new_tokens or 4000,
+                        preset_table_hints=app_table_hints or None,
                     ):
                         yield sse_line
             except Exception as e:
