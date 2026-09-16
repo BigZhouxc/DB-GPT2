@@ -3098,6 +3098,7 @@ async function loadApps() {
           <div class="app-card-badges">${badges}</div>
           <div class="app-card-actions">
             <button class="btn btn-sm btn-primary" onclick="enterAppChat('${a.app_code}','${escapeAttr(a.app_name)}')">进入对话</button>
+            <button class="btn btn-sm" onclick="showDebugPreview('${a.app_code}','${escapeAttr(a.app_name)}')">调试</button>
             <button class="btn btn-sm" onclick="editAppConfig('${a.app_code}')">编辑</button>
             <button class="btn btn-sm" onclick="showAppDetail('${a.app_code}')">详情</button>
             <button class="btn btn-sm btn-danger" onclick="deleteApp('${a.app_code}','${escapeAttr(a.app_name)}')">删除</button>
@@ -4044,6 +4045,424 @@ async function resumeAppSession(convUid, summary) {
     _renderActiveSessions();
     loadRecentSessions(); // ★ 刷新"最近会话"列表高亮
   } catch (e) { toast("加载历史消息失败: " + e.message, "error"); }
+}
+
+// ===== 调试预览（对接 chatWithDb 接口） =====
+let _debugPreviewAppCode = "";   // 当前调试的应用 app_code
+let _debugPreviewSession = "";   // 会话 ID（空=新建）
+let _debugPreviewAbort = null;  // AbortController
+
+async function showDebugPreview(appCode, appName) {
+  _debugPreviewAppCode = appCode;
+  _debugPreviewSession = "";  // 进入时新建会话
+
+  // 获取模型列表 + 应用详情（显示绑定信息）
+  let modelOptions = "";
+  let contextParts = [];
+  try {
+    const [mResp, detailResp] = await Promise.all([
+      api("POST", "/openPlatform/api/v1/model/config/page", { currentPage: 1, pageSize: 1000 }),
+      api("POST", "/knowledge/api/v1/agent/detail", { id: appCode }),
+    ]);
+    const models = (mResp.data || []).filter(m => m.status === 1);
+    const d = detailResp.data || {};
+    const modelConfig = (d.varMap?.modelConfig) || {};
+    const currentModel = modelConfig.modelType || "";
+    modelOptions = models.map(m => `<option value="${escapeAttr(m.modelName)}" ${m.modelName === currentModel ? "selected" : ""}>${escapeHtml(m.modelName)}</option>`).join("");
+
+    // 显示应用绑定信息
+    const dsConfigs = (d.varMap?.dataSourceConfigs) || [];
+    if (dsConfigs.length) contextParts.push(`📊 ${dsConfigs.map(ds => ds.dbName).join(", ")}`);
+    if (d.settingDescription) contextParts.push(`📝 已配置提示词`);
+    const ctxEl = document.getElementById("debug-preview-context");
+    if (ctxEl) ctxEl.textContent = contextParts.join(" | ") || "无绑定信息";
+
+    // 回显提示词
+    const promptEl = document.getElementById("debug-preview-prompt");
+    if (promptEl) promptEl.value = d.settingDescription || "";
+  } catch (e) {
+    // 回退到本地模型列表
+    modelOptions = (State.modelList || []).map(m => `<option value="${escapeAttr(m.model_name)}">${escapeHtml(m.model_name)}</option>`).join("");
+  }
+
+  const modelSelect = document.getElementById("debug-preview-model");
+  if (modelSelect) modelSelect.innerHTML = modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>';
+
+  document.getElementById("debug-preview-subtitle").textContent = `应用: ${appName}`;
+  document.getElementById("debug-preview-messages").innerHTML = `<div class="empty-state" style="padding:64px"><div class="empty-state-text">输入问题开始调试</div></div>`;
+  const input = document.getElementById("debug-preview-input");
+  if (input) { input.value = ""; input.style.height = "auto"; }
+  document.getElementById("debug-preview-page").style.display = "flex";
+  if (input) input.focus();
+}
+
+function hideDebugPreview() {
+  // 停止正在进行的请求
+  if (_debugPreviewAbort) { _debugPreviewAbort.abort(); _debugPreviewAbort = null; }
+  _debugPreviewAppCode = "";
+  _debugPreviewSession = "";
+  document.getElementById("debug-preview-page").style.display = "none";
+}
+
+function debugPreviewRestart() {
+  // 停止正在进行的请求
+  if (_debugPreviewAbort) { _debugPreviewAbort.abort(); _debugPreviewAbort = null; }
+  _debugPreviewSession = "";  // 清空会话 = 重新开始
+  document.getElementById("debug-preview-messages").innerHTML = `<div class="empty-state" style="padding:64px"><div class="empty-state-text">已重置，输入问题开始新的调试</div></div>`;
+  const sendBtn = document.getElementById("debug-preview-send-btn");
+  const stopBtn = document.getElementById("debug-preview-stop-btn");
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.style.display = "flex"; }
+  if (stopBtn) stopBtn.style.display = "none";
+  const input = document.getElementById("debug-preview-input");
+  if (input) { input.value = ""; input.style.height = "auto"; input.focus(); }
+  toast("已重置会话", "info");
+}
+
+function handleDebugKey(event) {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    sendDebugQuestion();
+  }
+}
+
+function _appendDebugMessage(role, text) {
+  const container = document.getElementById("debug-preview-messages");
+  if (!container) return null;
+  // 清空空状态提示
+  const empty = container.querySelector(".empty-state");
+  if (empty) empty.remove();
+  const avatar = role === "user" ? "&#128100;" : "&#129302;";
+  const roleName = role === "user" ? "我" : "Assistant";
+  const escaped = role === "user" ? escapeHtml(text) : text;
+  const msgEl = document.createElement("div");
+  msgEl.className = `msg msg-${role}`;
+  msgEl.innerHTML = `<div class="msg-avatar">${avatar}</div><div class="msg-content"><div class="msg-role">${roleName}</div><div class="msg-text">${escaped}</div></div>`;
+  container.appendChild(msgEl);
+  container.scrollTop = container.scrollHeight;
+  return msgEl.querySelector(".msg-text");
+}
+
+function _scrollDebugBottom() {
+  const container = document.getElementById("debug-preview-messages");
+  if (container) container.scrollTop = container.scrollHeight;
+}
+
+async function sendDebugQuestion() {
+  if (!_debugPreviewAppCode) return;
+  const input = document.getElementById("debug-preview-input");
+  const question = (input?.value || "").trim();
+  if (!question) return;
+
+  _appendDebugMessage("user", question);
+  input.value = "";
+  input.style.height = "auto";
+
+  const sendBtn = document.getElementById("debug-preview-send-btn");
+  const stopBtn = document.getElementById("debug-preview-stop-btn");
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.style.display = "none"; }
+  if (stopBtn) stopBtn.style.display = "flex";
+
+  // 创建 AbortController
+  _debugPreviewAbort = new AbortController();
+  const signal = _debugPreviewAbort.signal;
+
+  // 构造 chatWithDb 请求体
+  const model = document.getElementById("debug-preview-model")?.value || "";
+  const prompt = document.getElementById("debug-preview-prompt")?.value || "";
+  const body = {
+    question,
+    instanceId: _debugPreviewAppCode,
+    model: model || "",
+    isGraph: false,
+    queryMode: 0,
+    tableNames: [],
+    session: _debugPreviewSession || "",
+    prompt: prompt || "",
+  };
+
+  // 创建 AI 消息占位
+  const aiTextEl = _appendDebugMessage("ai", '<div class="typing-indicator"><span></span><span></span><span></span></div>');
+
+  // 复用 sendReactAgent 的 SSE 渲染逻辑，但改调 chatWithDb 接口
+  try {
+    await _sendDebugReactAgent(body, aiTextEl, signal);
+  } catch (err) {
+    if (err.name === "AbortError") {
+      aiTextEl.innerHTML = '<span style="color:var(--text-tertiary)">已停止</span>';
+    } else {
+      aiTextEl.innerHTML = `<span style="color:var(--danger)">请求失败: ${escapeHtml(err.message)}</span>`;
+    }
+  }
+
+  // 恢复按钮
+  _debugPreviewAbort = null;
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.style.display = "flex"; }
+  if (stopBtn) stopBtn.style.display = "none";
+  if (input) input.focus();
+}
+
+function stopDebugQuestion() {
+  if (_debugPreviewAbort) { _debugPreviewAbort.abort(); _debugPreviewAbort = null; }
+  const sendBtn = document.getElementById("debug-preview-send-btn");
+  const stopBtn = document.getElementById("debug-preview-stop-btn");
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.style.display = "flex"; }
+  if (stopBtn) stopBtn.style.display = "none";
+  toast("已停止", "info");
+}
+
+// 调试预览版的 React Agent SSE 渲染（复用 sendReactAgent 核心逻辑，改调 chatWithDb）
+async function _sendDebugReactAgent(body, aiTextEl, signal) {
+  const uid = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+  aiTextEl.innerHTML = `<div class="agent-progress" id="dp-progress-${uid}"></div><div class="react-steps" id="dp-react-steps-${uid}"></div><div id="dp-react-final-${uid}"></div>`;
+  const progressEl = aiTextEl.querySelector(`#dp-progress-${uid}`);
+  buildAgentProgress(progressEl);
+  setAgentStage(progressEl, 0);
+  const stepsContainer = aiTextEl.querySelector(`#dp-react-steps-${uid}`);
+  const finalContainer = aiTextEl.querySelector(`#dp-react-final-${uid}`);
+  let currentStepId = null;
+  let stepCount = 0;
+  let stepEls = {};
+
+  const opts = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  if (signal) opts.signal = signal;
+  const resp = await fetch(API_BASE + "/knowledge/llm/ai-analyze/chatWithDb/v1", opts);
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        const text = line.slice(6).trim();
+        if (!text || text === "[DONE]") continue;
+        let data;
+        try { data = JSON.parse(text); } catch { data = { type: "text", content: text }; }
+        _handleDebugSSEData(data, {
+          uid, progressEl, stepsContainer, finalContainer,
+          getStepEls: () => stepEls, setStepEls: (v) => { stepEls = v; },
+          getCurrentStepId: () => currentStepId, setCurrentStepId: (v) => { currentStepId = v; },
+          getStepCount: () => stepCount, setStepCount: (v) => { stepCount = v; },
+        });
+      }
+    }
+  }
+
+  // 兜底
+  setAgentStage(progressEl, 3);
+  const hasOutput = finalContainer.innerHTML.trim() !== "" || Object.keys(stepEls).length > 0;
+  if (!hasOutput) {
+    finalContainer.innerHTML = '<div class="react-error">⚠️ 未收到有效响应</div>';
+  }
+}
+
+// SSE 数据处理（复用 sendReactAgent 逻辑，适配调试预览的 DOM ID 前缀）
+function _handleDebugSSEData(data, ctx) {
+  if (!data) return;
+  const type = data.type;
+  const { uid, progressEl, stepsContainer, finalContainer } = ctx;
+  let stepEls = ctx.getStepEls();
+  let currentStepId = ctx.getCurrentStepId();
+  let stepCount = ctx.getStepCount();
+
+  if (type === "session") {
+    // 从 SSE 中捕获会话 ID
+    if (data.conv_uid) _debugPreviewSession = data.conv_uid;
+    return;
+  }
+  if (type === "opening") {
+    if (data.content) {
+      finalContainer.innerHTML = `<div class="react-opening">${escapeHtml(data.content)}</div>`;
+      _scrollDebugBottom();
+    }
+    return;
+  }
+  if (type === "context.status") {
+    setAgentStage(progressEl, 0, data.ratio != null ? data.ratio : null);
+    return;
+  }
+  if (type === "step.start") {
+    const stepId = data.id || `step-${stepCount}`;
+    currentStepId = stepId;
+    ctx.setCurrentStepId(stepId);
+    const toolType = data.tool_type || "";
+    const toolName = data.tool_name || data.title || data.detail || (toolType === "datasource_select" ? "数据源选择" : toolType === "table_select" ? "数据表选择" : "思考中");
+    if (!stepEls[stepId]) {
+      stepCount++;
+      ctx.setStepCount(stepCount);
+      const stepEl = document.createElement("div");
+      stepEl.className = "react-step" + (toolType ? " tool-step" : "");
+      stepEl.innerHTML = `<div class="react-step-header" onclick="toggleReactStep('dp-${uid}-${stepId}')">
+        <span class="react-step-badge">${stepCount}</span>
+        <span class="react-step-action">${escapeHtml(toolName)}</span>
+        <span class="react-step-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+      </div><div class="react-step-body" id="react-body-dp-${uid}-${stepId}"><div class="react-step-loading">等待数据...</div></div>`;
+      stepsContainer.appendChild(stepEl);
+      stepEls[stepId] = {
+        wrapper: stepEl,
+        bodyEl: stepEl.querySelector(`#react-body-dp-${uid}-${stepId}`),
+        badgeEl: stepEl.querySelector(".react-step-badge"),
+        actionEl: stepEl.querySelector(".react-step-action"),
+        rawContent: "",
+        _pendingRender: false,
+        toolType: toolType,
+        _toolRendered: false,
+      };
+      ctx.setStepEls(stepEls);
+    } else {
+      const entry = stepEls[stepId];
+      entry.toolType = toolType;
+      if (entry.actionEl && (data.title || data.detail || toolName)) {
+        entry.actionEl.textContent = toolName;
+      }
+    }
+    _scrollDebugBottom();
+    return;
+  }
+  if (type === "step.meta") {
+    const stepId = data.id || currentStepId || `step-${stepCount}`;
+    currentStepId = stepId;
+    ctx.setCurrentStepId(stepId);
+    setAgentStage(progressEl, 1);
+    const entry = stepEls[stepId];
+    if (entry && entry.bodyEl) {
+      if (entry._toolRendered) { _scrollDebugBottom(); return; }
+      const bodyEl = entry.bodyEl;
+      bodyEl.innerHTML = "";
+      if (data.tool_type === "datasource_select" || entry.toolType === "datasource_select") {
+        const result = data.result || {};
+        let html = "";
+        if (data.thought) html += `<div class="react-step-thought-full">💭 ${escapeHtml(data.thought)}</div>`;
+        html += `<div class="tool-result-card tool-ds-card"><span class="tool-label">已选择数据源</span><span class="tool-value tool-ds-name">${escapeHtml(result.datasource || "未选择")}</span>`;
+        if (result.reason) html += `<div class="tool-reason">${escapeHtml(result.reason)}</div>`;
+        if (result.fallback) html += `<div class="tool-badge-fallback">自动兜底</div>`;
+        html += `</div>`;
+        bodyEl.innerHTML = html;
+        entry._toolRendered = true;
+        _scrollDebugBottom();
+        return;
+      }
+      if (data.tool_type === "table_select" || entry.toolType === "table_select") {
+        const result = data.result || {};
+        let html = "";
+        if (data.thought) html += `<div class="react-step-thought-full">💭 ${escapeHtml(data.thought)}</div>`;
+        html += `<div class="tool-result-card tool-tbl-card"><span class="tool-label">已选择数据表</span>`;
+        if (result.tables && result.tables.length > 0) {
+          html += `<div class="tool-tables">`;
+          result.tables.forEach(t => { html += `<span class="tool-table-tag">${escapeHtml(t)}</span>`; });
+          html += `</div>`;
+          if (result.fields) {
+            let fieldsHtml = "";
+            for (const [tbl, cols] of Object.entries(result.fields)) {
+              if (cols && cols.length > 0) {
+                fieldsHtml += `<div class="tool-fields-row"><span class="tool-fields-tbl">${escapeHtml(tbl)}</span><span class="tool-fields-cols">${escapeHtml(cols.join(", "))}</span></div>`;
+              }
+            }
+            if (fieldsHtml) html += `<div class="tool-fields">${fieldsHtml}</div>`;
+          }
+        } else {
+          html += `<div class="tool-empty">未选择数据表</div>`;
+        }
+        if (result.reason) html += `<div class="tool-reason">${escapeHtml(result.reason)}</div>`;
+        if (result.fallback) html += `<div class="tool-badge-fallback">自动兜底</div>`;
+        html += `</div>`;
+        bodyEl.innerHTML = html;
+        entry._toolRendered = true;
+        _scrollDebugBottom();
+        return;
+      }
+      // 默认渲染
+      let content = "";
+      if (data.thought) content += `<div class="react-step-thought-full">💭 ${escapeHtml(data.thought)}</div>`;
+      if (data.action) content += `<div class="react-step-action-label">🔧 动作: <code>${escapeHtml(data.action)}</code></div>`;
+      if (data.action_input) {
+        try {
+          const ai = JSON.parse(data.action_input);
+          if (ai.sql) content += `<div class="react-step-sql">${escapeHtml(ai.sql)}</div>`;
+        } catch {
+          content += `<div class="react-step-sql">${escapeHtml(data.action_input)}</div>`;
+        }
+      }
+      if (content) bodyEl.innerHTML = content;
+    }
+    _scrollDebugBottom();
+    return;
+  }
+  if (type === "step.chunk" || type === "step.output") {
+    const stepId = data.id || currentStepId || `step-${stepCount}`;
+    const entry = stepEls[stepId];
+    setAgentStage(progressEl, 2);
+    if (entry && entry._toolRendered) { _scrollDebugBottom(); return; }
+    if (entry && entry.bodyEl && data.content) {
+      const loading = entry.bodyEl.querySelector(".react-step-loading");
+      if (loading) loading.remove();
+      entry.rawContent += data.content;
+      if (!entry._pendingRender) {
+        entry._pendingRender = true;
+        requestAnimationFrame(() => {
+          entry._pendingRender = false;
+          const metaNodes = entry.bodyEl.querySelectorAll(".react-step-thought-full, .react-step-action-label, .react-step-sql");
+          let metaHtml = "";
+          metaNodes.forEach(n => { metaHtml += n.outerHTML; });
+          entry.bodyEl.innerHTML = metaHtml + renderMarkdown(entry.rawContent);
+          _scrollDebugBottom();
+        });
+      }
+    }
+    return;
+  }
+  if (type === "step.done") {
+    const stepId = data.id || currentStepId || `step-${stepCount}`;
+    const entry = stepEls[stepId];
+    if (entry && entry.badgeEl) {
+      entry.badgeEl.classList.add("done");
+      if (data.status === "failed") entry.badgeEl.classList.add("failed");
+    }
+    return;
+  }
+  if (type === "final") {
+    setAgentStage(progressEl, 3);
+    if (data.content) {
+      const currentEntry = stepEls[currentStepId];
+      if (currentEntry && currentEntry.bodyEl) {
+        const loadingPlaceholder = currentEntry.bodyEl.querySelector(".react-step-loading");
+        if (loadingPlaceholder) loadingPlaceholder.remove();
+        if (currentEntry._toolRendered) {
+          finalContainer.innerHTML = `<div class="react-final">${renderMarkdown(data.content)}</div>`;
+          renderCitations(finalContainer, data.citations);
+          _scrollDebugBottom();
+          return;
+        }
+        const isError = !currentEntry.rawContent || currentEntry.rawContent.trim() === "" || currentEntry.rawContent.includes("No correct response found") || currentEntry.rawContent.includes("execute failed");
+        if (isError) currentEntry.rawContent = data.content;
+        const metaNodes = currentEntry.bodyEl.querySelectorAll(".react-step-thought-full, .react-step-action-label, .react-step-sql");
+        let metaHtml = "";
+        metaNodes.forEach(n => { metaHtml += n.outerHTML; });
+        currentEntry.bodyEl.innerHTML = metaHtml + renderFinalContent(currentEntry.rawContent);
+      }
+      finalContainer.innerHTML = `<div class="react-final">${renderFinalContent(data.content)}</div>`;
+    }
+    renderCitations(finalContainer, data.citations);
+    _scrollDebugBottom();
+    return;
+  }
+  if (type === "error") {
+    finalContainer.innerHTML = `<div class="react-error">⚠️ ${escapeHtml(data.message || "未知错误")}</div>`;
+    return;
+  }
+  if (type === "done") {
+    setAgentStage(progressEl, 3);
+    return;
+  }
+  // 兜底：文本内容直接渲染
+  if (type === "text" && data.content) {
+    finalContainer.innerHTML += escapeHtml(data.content);
+    _scrollDebugBottom();
+  }
 }
 
 // 应用模式发送问题——复用现有 SSE 渲染逻辑

@@ -3411,6 +3411,14 @@ data: {"type": "final", "content": "数据库中有以下表：..."}
 data: [DONE]
 ```
 
+**前端对接**：
+- 应用管理页卡片新增"调试"按钮 → 打开全屏调试预览页面
+- 调试预览页面布局：顶部模型选择+重新开始按钮，中间消息区（复用 React Agent SSE 渲染），底部输入框
+- 提示词输入框：可覆盖应用配置的提示词（`prompt` 字段）
+- "重新开始"按钮：清空 `session` 字段 → 后端新建会话（不带上下文 ID）
+- SSE 渲染逻辑：复用 `sendReactAgent` 的 step.start/step.meta/step.chunk/step.final 渲染，适配调试预览的 DOM 容器
+- `session` 字段：首次请求为空（新建），后续从 SSE `type: "session"` 事件中捕获 `conv_uid` 并复用
+
 ---
 
 ## 附录：接口统计

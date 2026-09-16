@@ -724,3 +724,25 @@ table.data-table tr:hover td { background: var(--bg-hover); }
 .ds-edit-right .ds-edit-right-body .ds-fields-table input:focus { border-color: var(--accent); }
 
 .ds-edit-footer { padding: 12px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 8px; background: var(--bg-secondary); flex-shrink: 0; }
+
+/* ==========================================================================
+   调试预览页面（全屏覆盖，复用聊天渲染逻辑）
+   ========================================================================== */
+.debug-preview-page { position: fixed; inset: 0; z-index: 2000; background: var(--bg-primary); display: flex; flex-direction: column; overflow: hidden; }
+.debug-preview-page .debug-preview-header { display: flex; align-items: center; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--border-color); background: var(--bg-secondary); flex-shrink: 0; }
+.debug-preview-page .debug-preview-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.debug-preview-page .debug-preview-config { padding: 12px 24px; border-bottom: 1px solid var(--border-color); background: var(--bg-secondary); flex-shrink: 0; }
+.debug-preview-page .debug-preview-config .form-field { margin: 0; }
+.debug-preview-page .debug-preview-config textarea { font-size: 13px; }
+.debug-preview-page .debug-preview-messages { flex: 1; overflow-y: auto; padding: 8px 24px; }
+.debug-preview-page .debug-preview-messages .msg { display: flex; gap: 12px; margin-bottom: 16px; }
+.debug-preview-page .debug-preview-messages .msg-avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; background: var(--bg-tertiary); flex-shrink: 0; }
+.debug-preview-page .debug-preview-messages .msg-content { flex: 1; min-width: 0; }
+.debug-preview-page .debug-preview-messages .msg-role { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.debug-preview-page .debug-preview-messages .msg-text { font-size: 14px; line-height: 1.6; color: var(--text-primary); word-break: break-word; }
+.debug-preview-page .debug-preview-input-area { padding: 12px 24px; border-top: 1px solid var(--border-color); background: var(--bg-secondary); flex-shrink: 0; }
+.debug-preview-page .debug-preview-input-area .chat-input-card { background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 12px; padding: 8px 12px; }
+.debug-preview-page .debug-preview-input-area .hero-textarea { width: 100%; border: none; resize: none; background: transparent; color: var(--text-primary); font-size: 14px; line-height: 1.5; outline: none; min-height: 24px; max-height: 120px; }
+.debug-preview-page .debug-preview-input-area .hero-toolbar { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+.debug-preview-page .debug-preview-input-area .hero-send-btn { width: 32px; height: 32px; border-radius: 50%; border: none; background: var(--accent); color: white; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+.debug-preview-page .debug-preview-input-area .hero-send-btn:hover { opacity: 0.9; }

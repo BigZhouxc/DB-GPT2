@@ -396,6 +396,49 @@
   </div>
 </div>
 
+<!-- ===== 调试预览页面（全屏覆盖） ===== -->
+<div class="debug-preview-page" id="debug-preview-page" style="display:none;">
+  <div class="debug-preview-header">
+    <button class="ds-edit-back" onclick="hideDebugPreview()"><i class="fa-solid fa-arrow-left"></i></button>
+    <div>
+      <div class="ds-edit-title">调试预览</div>
+      <div class="ds-edit-subtitle" id="debug-preview-subtitle">应用: —</div>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
+      <select class="select" id="debug-preview-model" style="width:200px;font-size:13px;"></select>
+      <button class="btn btn-sm" onclick="debugPreviewRestart()"><i class="fa-solid fa-rotate-right"></i> 重新开始</button>
+    </div>
+  </div>
+  <div class="debug-preview-body">
+    <div class="debug-preview-config">
+      <div class="form-field">
+        <label>提示词（可选，覆盖应用配置）</label>
+        <textarea class="input" id="debug-preview-prompt" rows="3" placeholder="输入提示词文本，不填则使用应用已配置的提示词"></textarea>
+      </div>
+    </div>
+    <div class="debug-preview-messages" id="debug-preview-messages">
+      <div class="empty-state" style="padding:64px"><div class="empty-state-text">输入问题开始调试</div></div>
+    </div>
+    <div class="debug-preview-input-area">
+      <div class="chat-input-card">
+        <textarea id="debug-preview-input" class="hero-textarea" placeholder="输入测试问题..." rows="1"
+          onkeydown="handleDebugKey(event)" oninput="autoResize(this)"></textarea>
+        <div class="hero-toolbar">
+          <div class="hero-toolbar-left">
+            <span class="chat-context" id="debug-preview-context"></span>
+          </div>
+          <button class="hero-send-btn" id="debug-preview-send-btn" onclick="sendDebugQuestion()">
+            <i class="fa-solid fa-arrow-up"></i>
+          </button>
+          <button class="hero-send-btn" id="debug-preview-stop-btn" onclick="stopDebugQuestion()" style="display:none; background:var(--danger); color:white;">
+            <i class="fa-solid fa-stop"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ===== 模态框 ===== -->
 <div class="modal-overlay" id="modal-overlay" style="display:none;" onclick="closeModal(event)" data-page-node-id="6gpglQXcNGdHzwoHrqX8UM">
   <div class="modal" id="modal-content" onclick="event.stopPropagation()" data-page-node-id="416HjZ7gnSr3NaZDllmS8z">
@@ -423,6 +466,6 @@
 <!-- Toast 容器 -->
 <div class="toast-container" id="toast-container" data-page-node-id="E3Z8s3fDM9ojEUPy2LZTeI"></div>
 
-<script src="/static/app.js?v=20260908b"></script>
+<script src="/static/app.js?v=20260916c"></script>
 </body>
 </html>
