@@ -58,9 +58,16 @@ def _clean_summary(summary: str) -> str:
     if not summary:
         return ""
     s = str(summary).strip()
-    # 去除 [Database: xxx] [Knowledge: yyy] 等前缀（react-agent user_input 带的前缀，可能多个连排）
-    while re.match(r'^\[(database|datasource|data\s*source|knowledge|知识库|数据源|数据库)[:：]\s*[^\]]*\]\s*', s, re.IGNORECASE):
-        s = re.sub(r'^\[(database|datasource|data\s*source|knowledge|知识库|数据源|数据库)[:：]\s*[^\]]*\]\s*', '', s, flags=re.IGNORECASE)
+    # 去除 [Database: xxx] [Tables: xxx] [Knowledge: yyy] 等前缀
+    # （react-agent user_input 带的前缀，可能多个连排）
+    while re.match(
+        r'^\[(database|datasource|data\s*source|tables|table|knowledge|知识库|数据源|数据库|数据表)[:：]\s*[^\]]*\]\s*',
+        s, re.IGNORECASE,
+    ):
+        s = re.sub(
+            r'^\[(database|datasource|data\s*source|tables|table|knowledge|知识库|数据源|数据库|数据表)[:：]\s*[^\]]*\]\s*',
+            '', s, flags=re.IGNORECASE,
+        )
     # 去除 【数据源:xxx】 等前缀
     s = re.sub(r'^【[^】]*】\s*', '', s)
     # 去除前缀中的 "数据源:xxx |" "知识库:yyy |" 等
@@ -71,13 +78,32 @@ def _clean_summary(summary: str) -> str:
     # 按分隔符拆分，过滤掉数据源/知识库/技能/连接器等前缀段
     parts = re.split(r'[|｜]', s)
     filtered = [p.strip() for p in parts if not re.match(
-        r'^(数据源|数据库|知识库|knowledge|datasource|data\s*source|技能|skill|连接器|connector)[:：]',
+        r'^(数据源|数据库|数据表|知识库|knowledge|datasource|data\s*source|tables?|技能|skill|连接器|connector)[:：]',
         p.strip(), re.IGNORECASE
     )]
     s = ' '.join(filtered).strip()
     if not s:
         s = str(summary).strip()
     return s
+
+
+# 工具编排器内部 LLM 调用专用的会话/用户标识（与 tool_orchestrator.py 保持一致）。
+# 这类会话是内部实现细节，不应出现在会话列表中。
+_TOOL_CONV_UID = "tool-orchestrator-internal"
+_TOOL_USER_NAME = "__tool_orchestrator__"
+
+
+def _is_tool_internal_conv(cv: dict) -> bool:
+    """判断是否为工具编排器内部会话（不应展示给用户）。"""
+    uid = str(cv.get("conv_uid") or cv.get("con_uid") or "")
+    user = str(cv.get("user_name") or "")
+    summary = str(cv.get("summary") or "")
+    if uid == _TOOL_CONV_UID or user == _TOOL_USER_NAME:
+        return True
+    # 兜底：存量脏数据特征 —— 摘要以工具 prompt 开头（LLM 调用未绑定会话时期产生）
+    if re.match(r'^你是一个数据分析助手的(数据源|数据表)选择工具', summary):
+        return True
+    return False
 
 
 def _update_conv_binding(conv_uid: str, datasource_id: int = None, knowledge_space_id: int = None, prompt_code: str = None, status: str = None):
@@ -248,6 +274,9 @@ async def list_conversations(user_name: Optional[str] = None, sys_code: Optional
         if not isinstance(convs, list):
             convs = []
 
+        # ★ 预过滤：conv_uid / user_name / summary 特征（DB-GPT /list 自带的 summary）
+        convs = [cv for cv in convs if isinstance(cv, dict) and not _is_tool_internal_conv(cv)]
+
         # ★ 并行获取所有会话的消息历史 + 绑定信息
         async def _fetch_conv_detail(cv):
             """并行获取单个会话的消息历史和绑定信息。"""
@@ -266,7 +295,9 @@ async def list_conversations(user_name: Optional[str] = None, sys_code: Optional
                         if not summary:
                             first_human = next((m for m in msgs if m.get("role") == "human"), None)
                             if first_human:
-                                summary = (first_human.get("context") or first_human.get("content") or "")[:100]
+                                # ★ 先清洗再截断：截断会破坏 [Tables: xxx] 的右括号导致清洗失配
+                                raw = str(first_human.get("context") or first_human.get("content") or "")
+                                summary = _clean_summary(raw)[:100]
                         summary = _clean_summary(summary)
                         last_msg = msgs[-1]
                         last_message_time = (
@@ -280,6 +311,15 @@ async def list_conversations(user_name: Optional[str] = None, sys_code: Optional
                 except Exception:
                     pass
             if not has_messages:
+                return None
+            # ★ 二次过滤：DB-GPT /list 的 summary 可能为空，摘要来自第一条 human
+            #   消息（工具 prompt 泄漏的会话正是这种形态），拿到摘要后再判一次
+            probe = {
+                "conv_uid": uid,
+                "user_name": cv.get("user_name", ""),
+                "summary": summary,
+            }
+            if _is_tool_internal_conv(probe):
                 return None
             binding = _get_conv_binding(uid) if uid else {}
             return {

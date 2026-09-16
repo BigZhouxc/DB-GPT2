@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from core.client_factory import get_client
 from core.qna_agent import QnAAgent
 from core.session_manager import sessions
+from modules.conversation import _is_tool_internal_conv
 
 router = APIRouter(prefix="/apps", tags=["App 管理"])
 
@@ -409,6 +410,9 @@ async def list_sessions(app_code: str):
             }
             # 只返回匹配当前 app 的会话
             if c["app_code"] == app_code or not c["app_code"]:
+                # ★ 过滤工具编排器内部会话（prompt 泄漏产生的脏会话）
+                if _is_tool_internal_conv(c):
+                    continue
                 sessions.append(c)
         return {"ok": True, "sessions": sessions}
     except HTTPException:

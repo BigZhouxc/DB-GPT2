@@ -31,6 +31,11 @@ _SELF_BASE = "http://127.0.0.1:8080"
 TOOL_DS_SELECT = "datasource_select"
 TOOL_TABLE_SELECT = "table_select"
 
+# 内部 LLM 调用专用会话标识：避免工具 prompt 作为独立会话泄漏到会话列表。
+# 固定 conv_uid 让所有工具调用复用同一内部会话；user_name 作为过滤标记。
+TOOL_CONV_UID = "tool-orchestrator-internal"
+TOOL_USER_NAME = "__tool_orchestrator__"
+
 
 def make_tool_sse(event_type: str, tool_type: str, data: dict) -> str:
     """构造工具执行 SSE 事件。
@@ -263,6 +268,12 @@ class ToolOrchestrator:
             "temperature": 0.1,
             # 推理模型的思考过程会消耗 token，给足余量防止 JSON 被截断
             "max_tokens": 2048,
+            # ★ 绑定内部专用会话：DB-GPT 对 chat_normal 会自动创建会话并持久化
+            #   消息，不传 conv_uid 时每次调用都新建会话，工具 prompt 就会
+            #   以「会话摘要」形式泄漏到会话列表。固定 uid + 标记 user_name
+            #   后复用同一内部会话，且列表层可按 user_name 过滤。
+            "conv_uid": TOOL_CONV_UID,
+            "user_name": TOOL_USER_NAME,
         }
 
         async with httpx.AsyncClient(

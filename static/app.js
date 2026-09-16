@@ -2576,9 +2576,9 @@ function _cleanSummary(summary) {
   // "数据源: xxx | 知识库: yyy | 问题内容" → "问题内容"
   // "【数据源:xxx】问题内容" → "问题内容"
   // "数据库:xxx 知识库:yyy 问题内容" → "问题内容"
-  // 去除 [Database: xxx] [Knowledge: yyy] 等前缀（可能多个连排）
-  while (/^\[(database|datasource|data\s*source|knowledge|知识库|数据源|数据库)[:：]\s*[^\]]*\]\s*/i.test(s)) {
-    s = s.replace(/^\[(database|datasource|data\s*source|knowledge|知识库|数据源|数据库)[:：]\s*[^\]]*\]\s*/i, "");
+  // 去除 [Database: xxx] [Tables: xxx] [Knowledge: yyy] 等前缀（可能多个连排）
+  while (/^\[(database|datasource|data\s*source|tables?|knowledge|知识库|数据源|数据库|数据表)[:：]\s*[^\]]*\]\s*/i.test(s)) {
+    s = s.replace(/^\[(database|datasource|data\s*source|tables?|knowledge|知识库|数据源|数据库|数据表)[:：]\s*[^\]]*\]\s*/i, "");
   }
   s = s.replace(/^【[^】]*】\s*/, "");
   s = s.replace(/^数据源[:：]\s*\S+\s*[|｜]\s*/i, "");
@@ -2588,7 +2588,7 @@ function _cleanSummary(summary) {
   // 去除前缀中的 "数据源:xxx" "知识库:yyy" 等
   const parts = s.split(/[|｜]/).map(p => p.trim());
   const filtered = parts.filter(p => {
-    if (/^(数据源|数据库|知识库|knowledge|datasource|data\s*source)[:：]/i.test(p)) return false;
+    if (/^(数据源|数据库|数据表|知识库|knowledge|datasource|data\s*source|tables?)[:：]/i.test(p)) return false;
     if (/^(技能|skill)[:：]/i.test(p)) return false;
     if (/^(连接器|connector)[:：]/i.test(p)) return false;
     return true;
