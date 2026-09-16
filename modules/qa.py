@@ -39,6 +39,73 @@ def _v1_url(path: str) -> str:
     return base.rstrip("/") + path
 
 
+def _persist_binding_fire_and_forget(
+    session: str,
+    datasource_names: Optional[list] = None,
+    knowledge_space: str = "",
+    prompt_code: str = "",
+):
+    """把会话绑定的数据源/知识库落库到 chat_history（fire-and-forget，失败不影响问答）。
+
+    保证会话恢复时 /conversations/{uid}/binding 能读回绑定信息，
+    绑定状态不依赖前端内存记忆。
+    """
+    if not session:
+        return
+    names = [str(n).strip() for n in (datasource_names or []) if str(n).strip()]
+    if not names and not knowledge_space and not prompt_code:
+        return
+    try:
+        from modules.conversation import _update_conv_binding, _resolve_ids
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # 在运行中的事件循环里用后台任务执行同步 DB 写（短事务，不阻塞）
+            asyncio.ensure_future(_async_persist_binding(session, names, knowledge_space, prompt_code))
+        else:
+            asyncio.run(_async_persist_binding(session, names, knowledge_space, prompt_code))
+    except Exception:
+        # 绑定落库失败不影响问答主流程
+        pass
+
+
+async def _async_persist_binding(session: str, names: list, knowledge_space: str, prompt_code: str):
+    """异步解析 ID 并写绑定（内部用线程池执行同步 pymysql 调用）。"""
+    try:
+        import asyncio as _asyncio
+        from modules.conversation import _update_conv_binding, _resolve_ids
+
+        def _do():
+            ids = _resolve_ids(knowledge_space_name=knowledge_space or None)
+            if names and "datasource_id" not in ids:
+                import httpx as _httpx
+                # 同步调用自己 /datasources 拿名称→ID 映射
+                import urllib.request as _ur
+                try:
+                    r = _ur.urlopen("http://127.0.0.1:8080/datasources", timeout=8)
+                    ds_list = json.loads(r.read().decode()).get("datasources", [])
+                    for name in names:
+                        for ds in ds_list:
+                            if ds.get("db_name") == name:
+                                ids["datasource_id"] = ds.get("id")
+                                break
+                        if "datasource_id" in ids:
+                            break
+                except Exception:
+                    pass
+            _update_conv_binding(
+                session,
+                datasource_id=ids.get("datasource_id"),
+                knowledge_space_id=ids.get("knowledge_space_id"),
+                prompt_code=prompt_code or None,
+            )
+
+        await _asyncio.get_event_loop().run_in_executor(None, _do)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Pydantic 请求模型
 # ---------------------------------------------------------------------------
@@ -349,6 +416,16 @@ async def ask_react_agent(req: ReactAgentRequest):
     - error: 错误
     """
     agent = _get_agent(req.chat_param or req.knowledge_space or "", req.session, model_name=req.model_name)
+
+    # ★ 服务端兜底：把本次会话选中的数据源/知识库落库到 chat_history 绑定字段，
+    #   会话恢复时 /conversations/{uid}/binding 才能读回（不依赖前端记忆）
+    _persist_binding_fire_and_forget(
+        req.session,
+        datasource_names=(req.database_names or ([req.chat_param] if req.chat_param else [])
+                          or ([req.database_name] if req.database_name else [])),
+        knowledge_space=req.knowledge_space or "",
+        prompt_code=req.prompt_code or "",
+    )
 
     async def gen():
         try:

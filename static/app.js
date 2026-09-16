@@ -318,7 +318,14 @@ function updateChatContextDisplay() {
   if (State.selectedKnowledge) parts.push(`📚 ${State.selectedKnowledge}`);
   if (State.selectedSkill) parts.push(`🧩 ${State.selectedSkill}`);
   if (State.selectedConnectors.length) parts.push(`🔌 ${State.selectedConnectors.length} 个连接器`);
+  if (State.attachedFiles.length) parts.push(`📎 ${State.attachedFiles.length} 个附件`);
   el.textContent = parts.join(" | ");
+}
+
+// 切换会话时立即清空上下文展示区（避免显示上一会话的残留）
+function clearChatContextDisplay() {
+  const el = document.getElementById("chat-context-display");
+  if (el) el.textContent = "";
 }
 
 // 推荐示例
@@ -588,6 +595,20 @@ async function sendQuestion(presetQuestion) {
   // ★ 在发送时捕获当前会话 UID，整个 SSE 生命周期使用此值（防止用户切换会话后 UID 漂移）
   const sessionUid = _currentConvUid || State.currentSessionId;
   if (sessionUid) _setSessionWorking(sessionUid, true);
+
+  // ★ 把当前选中的数据源/知识库绑定落库（fire-and-forget）：
+  //   保证恢复会话时 /conversations/{uid}/binding 能读回，不依赖前端记忆
+  if (sessionUid && (State.selectedDatasources.length || State.selectedKnowledge)) {
+    fetch(API_BASE + "/conversations/save-binding", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        conv_uid: sessionUid,
+        datasource_name: State.selectedDatasources.join(",") || null,
+        knowledge_space_name: State.selectedKnowledge || null,
+      }),
+    }).catch(() => {});
+  }
+
   _renderActiveSessions();
   loadRecentSessions(); // ★ 立即刷新"最近会话"列表，把该会话从最近会话中移除（避免延迟）
 
@@ -2336,6 +2357,12 @@ async function resumeConversation(convUid) {
   State.currentSessionId = convUid;
   _currentConvUid = convUid;
 
+  // ★ 第1.5步：立即清空 UI 残留（上下文展示区 + 应用指示器），防止显示上一会话内容
+  clearChatContextDisplay();
+  const _indicator = document.getElementById("app-indicator");
+  if (_indicator) _indicator.style.display = "none";
+  syncToolLabels();
+
   // ★ 第2步：切换到问答页（不走 navigate 避免触发 exitAppChat）
   _switchToAskPage();
 
@@ -2356,11 +2383,12 @@ async function resumeConversation(convUid) {
     msgs = Array.isArray(msgs) ? msgs : [];
 
     // 解析绑定信息（只从数据库读，不用 App 配置覆盖）
+    // database_name 由后端 JOIN connect_config 直接返回，无需前端二次请求
     const binding = bindingData.binding || {};
-    let dbName = "";
+    let dbName = binding.database_name || "";
     let kbName = binding.knowledge_space || "";
-    // 数据源名称从 datasource_id 解析
-    if (binding.datasource_id) {
+    // 兼容旧数据：后端未返回名称时按 datasource_id 解析
+    if (!dbName && binding.datasource_id) {
       try {
         const dsData = await api("GET", "/datasources");
         const dsList = dsData.datasources || [];
@@ -2375,6 +2403,7 @@ async function resumeConversation(convUid) {
     // 恢复的会话始终锁定只读（不管有没有绑定）
     lockAppToolbar({ database_name: dbName, knowledge_space: kbName, lockAlways: true });
     syncToolLabels();
+    updateChatContextDisplay();
 
     // ★ 第6步：根据后端实时 status 切换终止/发送按钮
     const convStatus = binding.status || "inactive";
@@ -2920,6 +2949,12 @@ function switchToActiveSession(convUid) {
   _switchToAskPage();
   _unparkSession(convUid);
 
+  // ★ 非应用会话：隐藏应用指示器（防止上个应用会话的指示器残留）
+  if (!_currentAppCode) {
+    const indicator = document.getElementById("app-indicator");
+    if (indicator) indicator.style.display = "none";
+  }
+
   // 恢复工具栏
   if (_currentAppCode && _currentAppConfig) {
     lockAppToolbar(_currentAppConfig.resources || {});
@@ -3378,6 +3413,7 @@ async function resumeAppSession(convUid, summary) {
   // ★ 清空状态，防止污染
   State.selectedDatasources = [];
   State.selectedKnowledge = "";
+  clearChatContextDisplay();
 
   // ★ 并行加载消息 + 绑定信息
   try {
@@ -3390,10 +3426,11 @@ async function resumeAppSession(convUid, summary) {
     if (!Array.isArray(msgs)) msgs = msgs["data"] || [];
 
     // 从绑定信息读取（不用 App 配置覆盖）
+    // database_name 由后端 JOIN connect_config 直接返回
     const binding = bindingData.binding || {};
-    let dbName = "";
+    let dbName = binding.database_name || "";
     let kbName = binding.knowledge_space || "";
-    if (binding.datasource_id) {
+    if (!dbName && binding.datasource_id) {
       try {
         const dsData = await api("GET", "/datasources");
         const dsList = dsData.datasources || [];
@@ -3407,6 +3444,7 @@ async function resumeAppSession(convUid, summary) {
     // 恢复的会话始终锁定
     lockAppToolbar({ database_name: dbName, knowledge_space: kbName, lockAlways: true });
     syncToolLabels();
+    updateChatContextDisplay();
 
     // 根据后端实时 status 切换终止/发送按钮
     const convStatus = binding.status || "inactive";

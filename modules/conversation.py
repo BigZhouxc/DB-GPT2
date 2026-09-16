@@ -143,16 +143,20 @@ def _update_conv_binding(conv_uid: str, datasource_id: int = None, knowledge_spa
 
 def _get_conv_binding(conv_uid: str) -> dict:
     """读取会话绑定的数据源/知识库/提示词/状态（从 chat_history 表）。
-    返回 datasource_id/knowledge_space_id/prompt_code/status + 名称（knowledge_space 通过 JOIN 查）。
+    返回 datasource_id/knowledge_space_id/prompt_code/status + 名称
+    （knowledge_space 通过 JOIN 查；database_name 通过 connect_config 解析，
+    前端无需再请求 /datasources 列表做二次匹配）。
     """
     conn = pymysql.connect(**_MYSQL_CONFIG)
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
                 "SELECT ch.datasource_id, ch.knowledge_space_id, ch.prompt_code, ch.status, "
-                "ks.name as knowledge_space_name "
+                "ks.name as knowledge_space_name, "
+                "cc.db_name as database_name "
                 "FROM chat_history ch "
                 "LEFT JOIN knowledge_space ks ON ch.knowledge_space_id = ks.id "
+                "LEFT JOIN connect_config cc ON ch.datasource_id = cc.id "
                 "WHERE ch.conv_uid = %s",
                 (conv_uid,)
             )
@@ -165,7 +169,7 @@ def _get_conv_binding(conv_uid: str) -> dict:
                 "prompt_code": row.get("prompt_code"),
                 "status": row.get("status") or "active",
                 "knowledge_space": row.get("knowledge_space_name") or "",
-                "database_name": "",
+                "database_name": row.get("database_name") or "",
             }
             return result
     finally:
@@ -382,21 +386,30 @@ class SaveBindingRequest(BaseModel):
 
 @router.post("/save-binding")
 async def save_binding(req: SaveBindingRequest):
-    """保存/更新会话的数据源/知识库/提示词绑定。"""
+    """保存/更新会话的数据源/知识库/提示词绑定。
+
+    datasource_name 支持逗号分隔多个名称，取第一个存在的名称解析为 datasource_id
+    （chat_history.datasource_id 为单值列；多库会话以主库为准，
+    前端展示用 database_name 字段冗余存完整列表）。
+    """
     try:
         ids = _resolve_ids(
             datasource_name=req.datasource_name,
             knowledge_space_name=req.knowledge_space_name,
         )
-        # 解析数据源 ID
+        # 解析数据源 ID（支持逗号分隔多名称）
         if req.datasource_name and "datasource_id" not in ids:
+            names = [n.strip() for n in str(req.datasource_name).split(",") if n.strip()]
             try:
                 async with httpx.AsyncClient(timeout=10, trust_env=False) as hc:
                     ds_resp = await hc.get("http://localhost:8080/datasources")
                     ds_list = ds_resp.json().get("datasources", [])
-                    for ds in ds_list:
-                        if ds.get("db_name") == req.datasource_name:
-                            ids["datasource_id"] = ds.get("id")
+                    for name in names:
+                        for ds in ds_list:
+                            if ds.get("db_name") == name:
+                                ids["datasource_id"] = ds.get("id")
+                                break
+                        if "datasource_id" in ids:
                             break
             except Exception:
                 pass
