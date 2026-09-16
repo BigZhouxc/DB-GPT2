@@ -3335,6 +3335,84 @@ curl -X POST http://localhost:8080/evaluation/run \
 
 ---
 
+## 13. 外部平台兼容 — 带有多个数据源聊天
+
+### 13.1 数据库对话（流式 SSE）
+
+**请求方式**：`POST`
+
+**请求地址**：`/knowledge/llm/ai-analyze/chatWithDb/v1`
+
+**接口说明**：应用管理界面的调试预览接口。前端只需传 `instanceId`（应用 app_code）+ `question` + `model`，后端自动从应用配置解析绑定的数据源/知识库/提示词。`session` 为空时表示"重新开始"（新建会话，不带上下文）。
+
+**请求参数**：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| question | string | 是 | - | 用户问题 |
+| instanceId | string | 是 | - | 应用 ID（app_code） |
+| model | string | 否 | `""` | 临时选中的模型（空=用应用配置的模型） |
+| isGraph | bool | 否 | false | 是否启用知识图谱（暂不支持，接收忽略） |
+| queryMode | int | 否 | 0 | 查询模式（0=自动，接收忽略） |
+| tableNames | string[] | 否 | `[]` | 临时预选表（覆盖应用配置的预选表） |
+| session | string | 否 | `""` | 会话 ID（空=新建会话=重新开始） |
+| prompt | string | 否 | `""` | 临时提示词文本（覆盖应用配置的提示词，通过 prompt_code 注入到 system prompt 指定位置） |
+
+**响应**：SSE 流式响应（`text/event-stream`），格式与 `/ask/react-agent` 完全一致。
+
+**SSE 事件类型**：
+
+| type | 说明 |
+|------|------|
+| opening | 开场白（应用配置的 openingMessage） |
+| context.status | 上下文预算 |
+| step.start | 推理步骤开始 |
+| step.meta | 步骤元信息（thought / action / action_input） |
+| step.chunk | 步骤输出内容 |
+| step.done | 步骤完成 |
+| final | 最终回答 |
+| done | 流结束 |
+| error | 错误 |
+
+**后端处理逻辑**：
+
+1. 用 `instanceId` 调 DB-GPT `GET /app/{app_code}` 获取应用详情
+2. 从 `details[].resources` 解析绑定的数据源名列表 + 预选表 + 知识库 + 模型名 + 提示词
+3. 查 `app_extra_config` 获取 temperature/max_new_tokens/opening_message
+4. `model` 覆盖：请求体 `model` 非空则覆盖应用模型
+5. `tableNames` 覆盖：请求体 `tableNames` 非空则覆盖第一个数据源的预选表
+6. `prompt` 覆盖：请求体 `prompt` 非空则作为 `prompt_code` 传入（覆盖应用配置的提示词）
+7. `session` 处理：空=新建 UUID 会话（重新开始），非空=复用已有会话
+8. 调 `QnAAgent.ask_react_stream()` 流式输出
+
+**请求示例**：
+
+```json
+{
+  "question": "数据库里有哪些表",
+  "instanceId": "4cab71ee-b1c6-11f1-bfd7-0242ac160002",
+  "model": "",
+  "isGraph": false,
+  "queryMode": 0,
+  "tableNames": [],
+  "session": "",
+  "prompt": ""
+}
+```
+
+**响应示例**（SSE 流）：
+
+```
+data: {"type": "opening", "content": "你好，我是数据分析助手"}
+data: {"type": "context.status", "used": 8901, "budget": 115904, "ratio": 0.0768, "state": "normal", "compact_layer": null}
+data: {"type": "step.start", "step": 1, "id": "step-1", "title": "思考中", "detail": "Thought/Action/Observation"}
+data: {"type": "step.meta", "step": 1, "thought": "...", "action": "sql_query", ...}
+data: {"type": "final", "content": "数据库中有以下表：..."}
+data: [DONE]
+```
+
+---
+
 ## 附录：接口统计
 
 | 模块 | 接口数 | 路由前缀 | 备注 |
@@ -3348,7 +3426,7 @@ curl -X POST http://localhost:8080/evaluation/run \
 | AWEL Flow | 5 | `/flows` | |
 | Prompt | 5 | `/prompts` | |
 | App | 2 | `/apps` | |
-| 外部平台兼容 | 9 | 无 prefix（与外部平台路径一致） | 模型配置/数据源配置/insert/detail/update/dbNamesByIds/getTables/getComments/updateComments |
+| 外部平台兼容 | 10 | 无 prefix（与外部平台路径一致） | 模型配置/数据源配置/insert/detail/update/dbNamesByIds/getTables/getComments/updateComments/chatWithDb |
 | 评估 | 1 | `/evaluation` | |
 | 系统 | 2 | `/` `/health` | |
-| **合计** | **72** | - | 含 2 个 deprecated 旧接口 |
+| **合计** | **73** | - | 含 2 个 deprecated 旧接口 |

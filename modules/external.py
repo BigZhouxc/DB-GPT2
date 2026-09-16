@@ -20,6 +20,7 @@ from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text as sa_text
 
@@ -860,3 +861,151 @@ async def agent_update(req: AgentUpdateRequest):
         raise
     except Exception as e:
         raise HTTPException(502, detail=f"编辑智能体失败: {e}")
+
+
+# ===========================================================================
+# 第二章：带有多个数据源聊天
+# 接口：POST /knowledge/llm/ai-analyze/chatWithDb/v1 — 流式问答（SSE）
+# ===========================================================================
+class ChatWithDbRequest(BaseModel):
+    """外部平台 chatWithDb 接口请求体。
+
+    前端只需传 instanceId（应用 app_code）+ question + model，
+    后端自动从应用配置解析绑定的数据源/知识库/提示词。
+    """
+    question: str = Field(..., description="用户问题")
+    instanceId: str = Field(..., description="应用 ID（app_code）")
+    model: str = Field("", description="临时选中的模型（空=用应用配置的模型）")
+    isGraph: bool = Field(False, description="是否启用知识图谱（暂不支持，接收忽略）")
+    queryMode: int = Field(0, description="查询模式（0=自动，接收忽略）")
+    tableNames: List[str] = Field(default_factory=list, description="临时预选表（覆盖应用配置的预选表）")
+    session: str = Field("", description="会话 ID（空=新建会话=重新开始）")
+    prompt: str = Field("", description="临时提示词文本（覆盖应用配置的提示词，插入到 system prompt 指定位置）")
+
+
+@router.post("/knowledge/llm/ai-analyze/chatWithDb/v1")
+async def chat_with_db(req: ChatWithDbRequest):
+    """带有多个数据源聊天（SSE 流式响应）。
+
+    从 instanceId（app_code）解析应用绑定的数据源/知识库/模型/提示词，
+    调用 QnAAgent.ask_react_stream() 完成多步推理 + SQL 执行。
+
+    - session 为空 → 新建会话（"重新开始"）
+    - model 非空 → 覆盖应用配置的模型
+    - tableNames 非空 → 覆盖应用配置的预选表
+    - prompt 非空 → 覆盖应用配置的提示词（前端传入的原始文本，通过 prompt_code 注入）
+    """
+    import uuid
+
+    try:
+        # 1. 调 DB-GPT 获取应用详情
+        async with httpx.AsyncClient(timeout=15, trust_env=False) as c:
+            r = await c.get(f"{_DBGPT_V1_BASE}/app/{req.instanceId}")
+            data = r.json()
+        if not data.get("success"):
+            raise HTTPException(404, detail=f"应用不存在: {req.instanceId}")
+        app = data.get("data") or {}
+
+        # 2. 从 details[].resources 解析数据源 + 知识库 + 模型 + 提示词
+        db_names = []
+        db_tables = {}
+        knowledge_space = ""
+        model_name = ""
+        prompt_code = ""
+
+        for detail in app.get("details") or []:
+            for res in detail.get("resources") or []:
+                if res.get("type") in ("database", "datasource"):
+                    val = res.get("value", "")
+                    try:
+                        parsed = json.loads(val) if isinstance(val, str) else val
+                    except Exception:
+                        parsed = {}
+                    db_name = parsed.get("db_name", "")
+                    if db_name:
+                        db_names.append(db_name)
+                        tables = parsed.get("tables", [])
+                        if tables:
+                            db_tables[db_name] = [str(t) for t in tables]
+                elif res.get("type") == "knowledge":
+                    val = res.get("value", "")
+                    try:
+                        parsed = json.loads(val) if isinstance(val, str) else val
+                        knowledge_space = parsed.get("name", parsed.get("knowledge_space", ""))
+                    except Exception:
+                        knowledge_space = str(val)
+            # 提取模型名
+            lsv = detail.get("llm_strategy_value", "")
+            if lsv and not model_name:
+                try:
+                    if isinstance(lsv, str) and lsv.startswith("["):
+                        arr = json.loads(lsv)
+                        model_name = arr[0] if arr else lsv
+                    else:
+                        model_name = str(lsv)
+                except Exception:
+                    model_name = str(lsv)
+            # 提取提示词
+            pt = detail.get("prompt_template")
+            if pt and not prompt_code:
+                prompt_code = pt
+
+        # 3. 查辅助表获取 temperature/max_new_tokens
+        extra = _get_extra_config(req.instanceId)
+        temperature = (extra.get("temperature") or 0.6) if extra else 0.6
+        max_new_tokens = (extra.get("max_new_tokens") or 4000) if extra else 4000
+
+        # 4. 覆盖逻辑：请求参数覆盖应用配置
+        # model 覆盖
+        final_model = req.model or model_name or DEFAULT_MODEL
+        # tableNames 覆盖：如果请求传了 tableNames，覆盖第一个数据源的预选表
+        if req.tableNames and db_names:
+            db_tables[db_names[0]] = [str(t) for t in req.tableNames]
+        # prompt 覆盖：前端传入的原始提示词文本优先
+        final_prompt_code = req.prompt or prompt_code or None
+
+        # 5. session 处理：空=新建会话
+        if req.session:
+            conv_uid = req.session
+        else:
+            conv_uid = str(uuid.uuid4()).replace("-", "")
+
+        # 6. 构造 QnAAgent
+        from core.qna_agent import QnAAgent
+
+        agent = QnAAgent(client=get_client(), model=final_model)
+        agent.set_session(conv_uid)
+
+        # 7. 构造 chat_param / database_names / table_hints
+        chat_param = db_names[0] if len(db_names) == 1 else ""
+        database_names = db_names if db_names else None
+        preset_table_hints = db_tables if db_tables else None
+
+        # 8. 流式输出
+        async def gen():
+            try:
+                # 开场白（如果有）
+                opening = (extra or {}).get("opening_message", "")
+                if opening:
+                    yield f'data: {json.dumps({"type": "opening", "content": opening}, ensure_ascii=False)}\n\n'
+
+                async for sse_line in agent.ask_react_stream(
+                    question=req.question,
+                    chat_param=chat_param,
+                    knowledge_space=knowledge_space or None,
+                    database_names=database_names,
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
+                    prompt_code=final_prompt_code,
+                    preset_table_hints=preset_table_hints,
+                ):
+                    yield sse_line
+            except Exception as e:
+                yield f'data: {json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)}\n\n'
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, detail=f"chatWithDb 失败: {e}")
