@@ -32,6 +32,149 @@ class ChatMode(str, Enum):
         return [m.value for m in cls]
 
 
+def _repair_json_string(json_str: str) -> Optional[str]:
+    """尝试修复损坏的 JSON 字符串（LLM 生成的 HTML/代码中含未转义引号导致 JSON 断裂）。
+
+    策略：逐字符扫描，状态机判断引号是否在字符串内；
+    遇到字符串内部未转义的 `"` 时，查看后续非空白字符——
+    若不是合法的结构字符（`,` `}` `]` `:`），则认为是内容引号，补转义。
+    """
+    if not json_str:
+        return None
+    out = []
+    i, n = 0, len(json_str)
+    in_string = False
+    while i < n:
+        ch = json_str[i]
+        if not in_string:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        # 在字符串内
+        if ch == '\\':
+            # 转义序列原样保留
+            if i + 1 < n:
+                out.append(ch)
+                out.append(json_str[i + 1])
+                i += 2
+            else:
+                out.append(ch)
+                i += 1
+            continue
+        if ch == '"':
+            # 找下一个非空白字符
+            j = i + 1
+            while j < n and json_str[j] in ' \t\r\n':
+                j += 1
+            next_ch = json_str[j] if j < n else ''
+            if next_ch in ',}]:':
+                # 合法的字符串结束
+                in_string = False
+                out.append(ch)
+                i += 1
+            elif next_ch == '"':
+                # "..."  "..." 相邻——可能是合法的逗号被省略或内容引号。
+                # 若当前字符串结束后紧跟另一个字符串开头，大概率是内容引号
+                # （如 HTML 属性: class="a">  下一字符是 > 而非 "，不会进这分支）
+                # 保守起见：视为字符串结束
+                in_string = False
+                out.append(ch)
+                i += 1
+            else:
+                # 结构字符之外 → 内容引号，补转义
+                out.append('\\"')
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    repaired = ''.join(out)
+    try:
+        json.loads(repaired)
+        return repaired
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _extract_embedded_html(code: str) -> Optional[str]:
+    """从 Python 代码中提取完整的 HTML 文档（f-string / 字符串赋值）。"""
+    if not code or '<!DOCTYPE html' not in code and '<!doctype html' not in code and '<html' not in code:
+        return None
+    # 模式1: html = f'''...''' / html = '''...''' / html = f"""..."""
+    m = re.search(
+        r'''\b\w+\s*=\s*f?(['"]){3}(.+?)\1{3}''',
+        code, re.DOTALL,
+    )
+    if m:
+        raw = m.group(2)
+        # 还原 f-string 转义
+        raw = raw.replace('{{', '{').replace('}}', '}')
+        if '<!DOCTYPE html' in raw or '<!doctype html' in raw or '<html' in raw:
+            return raw
+    # 模式2: 直接找 <!DOCTYPE html 到 </html> 的片段
+    m2 = re.search(r'(<!DOCTYPE html.*</html>)', code, re.DOTALL | re.IGNORECASE)
+    if m2:
+        return m2.group(1)
+    return None
+
+
+def _recover_code_payload(content: str) -> Optional[dict]:
+    """识别 LLM 错误输出的 {"code": "..."} / {"html": "..."} 损坏 JSON，提取有效载荷。
+
+    返回 {"kind": "html", "html": ...} 或 {"kind": "code", "code": ..., "lang": ...} 或 None。
+    """
+    if not content:
+        return None
+    s = content.strip()
+    # 必须形如 JSON 对象且包含 code/html 键
+    if not (s.startswith('{') and re.match(r'^\{\s*"(code|html|script)"\s*:', s)):
+        return None
+
+    obj = None
+    # 1. 标准 JSON 解析
+    try:
+        obj = json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        # 2. 损坏 JSON 修复后解析
+        repaired = _repair_json_string(s)
+        if repaired:
+            try:
+                obj = json.loads(repaired)
+            except (json.JSONDecodeError, ValueError):
+                obj = None
+
+    if obj and isinstance(obj, dict):
+        if obj.get("html"):
+            return {"kind": "html", "html": str(obj["html"])}
+        if obj.get("code"):
+            code = str(obj["code"])
+            # code 里若藏着完整 HTML 报告 → 优先按 HTML 处理
+            embedded = _extract_embedded_html(code)
+            if embedded:
+                return {"kind": "html", "html": embedded}
+            lang = str(obj.get("language") or obj.get("lang") or "python")
+            return {"kind": "code", "code": code, "lang": lang}
+        return None
+
+    # 3. JSON 修复也失败：直接从原文提取内嵌 HTML
+    embedded = _extract_embedded_html(s)
+    if embedded:
+        return {"kind": "html", "html": embedded}
+    # 4. 兜底：用宽松正则提取 "code" 字段（反转义后作为代码块展示）
+    m = re.search(r'"code"\s*:\s*"(.*)', s, re.DOTALL)
+    if m:
+        raw = m.group(1)
+        raw = raw.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
+        # 截掉可能残存的 JSON 尾部
+        raw = re.sub(r'"\s*,?\s*"(?:language|lang|name|title)"\s*:\s*[^}]*$', '', raw)
+        embedded2 = _extract_embedded_html(raw)
+        if embedded2:
+            return {"kind": "html", "html": embedded2}
+        return {"kind": "code", "code": raw.rstrip().rstrip('"'), "lang": "python"}
+    return None
+
+
 def _clean_react_final(content: str) -> str:
     """清洗 ReAct Agent final_content 中可能泄露的非用户内容。
 
@@ -40,9 +183,26 @@ def _clean_react_final(content: str) -> str:
       2. LLM 输出中包含原始 ReAct 格式残留（Thought:/Action:/Action Input:）
       3. terminate 工具执行失败时，final_content 是 LLM 原始输出而非提取的 result
          — 此时尝试从 Action Input 的 JSON 中提取 result 字段
+      4. LLM 违规用 code_interpreter 直接生成 HTML 报告并 terminate，
+         final_content 是 {"code": "..."} / {"html": "..."}（可能还是损坏的 JSON）
+         — 修复 JSON 后把 HTML 还原为完整报告 / 把代码还原为 markdown 代码块
     """
     if not content:
         return content
+
+    # ★ 场景4：损坏 JSON code 载荷兜底（在其它清洗前执行，避免误伤）
+    payload = _recover_code_payload(content)
+    if payload:
+        if payload["kind"] == "html":
+            html_doc = payload["html"]
+            return (
+                '<div class="react-embedded-report" data-embed-html="1">'
+                + html_doc
+                + '</div>'
+            )
+        lang = payload.get("lang", "python")
+        code = payload["code"]
+        return f'```{lang}\n{code}\n```'
 
     s = content
 
@@ -110,8 +270,6 @@ def _clean_react_final(content: str) -> str:
 
     # 5. 清理多余空行
     s = re.sub(r'\n{3,}', '\n\n', s).strip()
-
-    return s
 
     return s
 
@@ -438,22 +596,21 @@ class QnAAgent:
             yield make_tool_sse("step.done", "table_select", {"id": "tool-tbl-select"})
 
         # ========== 委托 DB-GPT react-agent ==========
+        # ★ user_input 不再拼接 [Database:]/[Tables:] 前缀（避免入库并显示在用户消息中），
+        #   数据库通过 ext_info.database_name 加载，表引导通过 ext_info.table_hints 注入。
         final_db = selected_ds or database_name or chat_param or ""
 
         user_input = question
-        prefix_parts = []
-        if final_db:
-            prefix_parts.append(f"[Database: {final_db}]")
-        if table_hints and table_hints.get("tables"):
-            tables_str = ",".join(table_hints["tables"])
-            prefix_parts.append(f"[Tables: {tables_str}]")
-        if prefix_parts:
-            user_input = f"{' '.join(prefix_parts)} {question}"
 
         ext_info: dict = {}
         if final_db:
             ext_info["database_name"] = final_db
             ext_info["database_type"] = "mysql"
+        if table_hints and table_hints.get("tables"):
+            ext_info["table_hints"] = {
+                "tables": list(table_hints["tables"]),
+                "fields": table_hints.get("fields") or {},
+            }
         if skill_name:
             ext_info["skill_name"] = skill_name
         if knowledge_space:

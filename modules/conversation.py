@@ -14,6 +14,8 @@ import pymysql
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from core.qna_agent import _clean_react_final
+
 router = APIRouter(prefix="/conversations", tags=["会话管理"])
 
 # DB-GPT API 地址
@@ -448,9 +450,38 @@ async def get_history(con_uid: str):
     """获取会话历史消息。
 
     API: GET /api/v1/chat/dialogue/messages/history?con_uid=xxx
+
+    ★ view 消息的 final_content 经 _clean_react_final 清洗：
+      修复 LLM 错误输出的损坏 JSON code 载荷（还原 HTML 报告 / 代码块），
+      使前端恢复历史会话时正常渲染。
     """
     try:
         data = await _v1_get("/messages/history", con_uid=con_uid)
+        msgs = data
+        if isinstance(data, dict) and "data" in data:
+            msgs = data["data"]
+        if isinstance(msgs, list):
+            for m in msgs:
+                if not isinstance(m, dict):
+                    continue
+                role = str(m.get("role") or m.get("type") or "")
+                if role != "view":
+                    continue
+                content = m.get("context") or m.get("content") or ""
+                if not isinstance(content, str) or not content.strip().startswith("{"):
+                    continue
+                try:
+                    import json as _json
+                    parsed = _json.loads(content)
+                    fc = parsed.get("final_content") if isinstance(parsed, dict) else None
+                    if fc and isinstance(fc, str):
+                        cleaned = _clean_react_final(fc)
+                        if cleaned and cleaned != fc:
+                            parsed["final_content"] = cleaned
+                            m["context"] = _json.dumps(parsed, ensure_ascii=False)
+                            m["content"] = m["context"]
+                except Exception:
+                    continue
         return {"ok": True, "messages": data}
     except HTTPException:
         raise

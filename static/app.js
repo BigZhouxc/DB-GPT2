@@ -939,10 +939,10 @@ async function sendReactAgent(body, aiTextEl) {
           metaNodes.forEach(n => { metaHtml += n.outerHTML; });
           
           // 渲染内容到思考区域
-          currentEntry.bodyEl.innerHTML = metaHtml + renderMarkdown(currentEntry.rawContent);
+          currentEntry.bodyEl.innerHTML = metaHtml + renderFinalContent(currentEntry.rawContent);
         }
         // 同时在 finalContainer 也显示（保持兼容性）
-        finalContainer.innerHTML = `<div class="react-final">${renderMarkdown(data.content)}</div>`;
+        finalContainer.innerHTML = `<div class="react-final">${renderFinalContent(data.content)}</div>`;
       }
       renderCitations(finalContainer, data.citations);
       scrollChatBottom();
@@ -1241,6 +1241,58 @@ function renderMarkdown(md) {
 
 // 兼容旧函数名
 function renderMarkdownTable(md) { return renderMarkdown(md); }
+
+// ==========================================================================
+// final_content 渲染分发器
+// 后端已把 {"code": "..."} / {"html": "..."} 载荷还原为:
+//   - 完整 HTML 文档包裹在 <div class="react-embedded-report"> 中 → iframe 渲染
+//   - ```lang 代码块 → 正常 markdown 代码块渲染
+// 兜底：前端再自行识别一次（历史存量数据后端接口未清洗时）
+// ==========================================================================
+function renderFinalContent(md) {
+  if (!md) return "";
+  const raw = String(md);
+  // 1. 后端包裹的完整 HTML 报告（新数据 / 后端清洗过的历史）
+  if (/<div class="react-embedded-report"[^>]*>/i.test(raw)) {
+    return raw;
+  }
+  // 2. 兜底：前端自行识别损坏的 {"code": "..."} JSON
+  const s = raw.trim();
+  if (s.startsWith("{") && /"(?:code|html)"\s*:/.test(s.slice(0, 60))) {
+    // 尝试解析（含修复），提取 html/code
+    let obj = null;
+    try { obj = JSON.parse(s); } catch (e) { obj = null; }
+    if (!obj) {
+      // 宽松提取 "code": " 之后的内容，反转义
+      const m = s.match(/"(?:code|html)"\s*:\s*"([\s\S]*)/);
+      if (m) {
+        const unescaped = m[1].replace(/\\n/g, "\n").replace(/\\t/g, "\t")
+          .replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+        const htmlDoc = unescaped.match(/<!DOCTYPE html[\s\S]*<\/html>/i);
+        if (htmlDoc) return buildReportIframe(htmlDoc[0]);
+        return renderMarkdown("```python\n" + unescaped + "\n```");
+      }
+    } else if (obj.html) {
+      return buildReportIframe(String(obj.html));
+    } else if (obj.code) {
+      const htmlDoc = String(obj.code).match(/<!DOCTYPE html[\s\S]*<\/html>/i);
+      if (htmlDoc) return buildReportIframe(htmlDoc[0]);
+      return renderMarkdown("```python\n" + obj.code + "\n```");
+    }
+  }
+  return renderMarkdown(raw);
+}
+
+// 用沙箱 iframe 渲染完整 HTML 报告文档
+function buildReportIframe(htmlDoc) {
+  const h = Math.max(520, Math.min(860, (htmlDoc.match(/\n/g) || []).length * 7 + 120));
+  return `<div class="report-frame-wrap"><iframe class="report-frame" sandbox="allow-scripts" style="width:100%;height:${h}px;border:1px solid rgba(120,130,150,0.25);border-radius:8px;background:#fff" srcdoc="${escapeAttrForSrcdoc(htmlDoc)}"></iframe></div>`;
+}
+
+// srcdoc 属性转义（引号 → &quot;，& → &amp;）
+function escapeAttrForSrcdoc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
 
 // ==========================================================================
 // 数据源管理
@@ -2398,11 +2450,15 @@ function _renderHistoryMessages(msgs) {
     const role = m.role || m.type;
     const content = m.context || m.content || "";
     if (role === "human") {
-      const cleanContent = content.replace(/^\[Database:\s*[^\]]+\]\s*/, "");
+      // ★ 剥离存储 user_input 中可能存在的历史前缀（可能多个连排）
+      const cleanContent = content.replace(
+        /^(?:\[(?:Database|Datasource|Data\s*Source|Tables|Table|Knowledge)\s*:\s*[^\]]*\]\s*)+/i,
+        ""
+      );
       appendMessage("user", cleanContent);
       lastRole = "human";
     } else if (role === "ai") {
-      appendMessage("ai", renderMarkdown(content));
+      appendMessage("ai", renderFinalContent(content));
       lastRole = "ai";
     } else if (role === "view") {
       // view 是 ai 的副本——如果上一条已渲染了 ai，跳过
@@ -2415,7 +2471,7 @@ function _renderHistoryMessages(msgs) {
           if (parsed.final_content) displayContent = parsed.final_content;
         }
       } catch {}
-      appendMessage("ai", renderMarkdown(displayContent));
+      appendMessage("ai", renderFinalContent(displayContent));
       lastRole = "view";
     }
   }
