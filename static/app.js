@@ -3296,7 +3296,10 @@ async function deleteApp(appCode, appName) {
   catch (e) { toast("删除失败: " + e.message, "error"); }
 }
 
-// 编辑应用配置（对接外部平台 agent/detail + agent/update）
+// ===== 编辑应用配置（对接外部平台 agent/detail + agent/update） =====
+// 编辑弹窗中选中的数据源状态
+let _editBoundDs = [];  // [{id, dbName, dbType, jdbcUrl, name, ip, port, tableNames: []}]
+
 async function editAppConfig(appCode) {
   try {
     // 1. 调外部平台 detail 接口获取完整配置
@@ -3306,15 +3309,28 @@ async function editAppConfig(appCode) {
     const modelConfig = varMap.modelConfig || {};
     const dsConfigs = varMap.dataSourceConfigs || [];
 
-    // 2. 并行获取模型列表和数据源列表（外部平台格式）
-    const [mResp, dsResp] = await Promise.all([
+    // 2. 并行获取模型列表、全量数据源列表、已选数据源详情
+    const [mResp, dsResp, boundResp] = await Promise.all([
       api("POST", "/openPlatform/api/v1/model/config/page", { currentPage: 1, pageSize: 1000 }),
       api("POST", "/knowledge/llm/userDataSource/get/page/v1", { currentPage: 1, pageSize: 1000, dbName: "" }),
+      // 获取已选数据源的详情（名称、类型等）
+      dsConfigs.length > 0
+        ? api("POST", "/knowledge/llm/userDataSource/get/dbNamesByIds/v1", { ids: dsConfigs.map(ds => ds.databaseId).filter(Boolean) })
+        : Promise.resolve({ data: [] }),
     ]);
     const externalModels = (mResp.data || []).filter(m => m.status === 1);
-    const externalDs = (dsResp.data || []);
+    const allDs = (dsResp.data || []);
+    const boundDsDetail = (boundResp.data || []);
 
-    // 3. 获取提示词列表
+    // 3. 组装已绑定数据源（合并 detail 中的 tableNames + dbNamesByIds 中的详情）
+    const boundTablesMap = {};
+    dsConfigs.forEach(ds => { if (ds.dbName && ds.tableNames) boundTablesMap[ds.dbName] = ds.tableNames; });
+    _editBoundDs = boundDsDetail.map(bd => ({
+      ...bd,
+      tableNames: boundTablesMap[bd.dbName || bd.name] || [],
+    }));
+
+    // 4. 获取提示词列表
     let promptOptions = "";
     try {
       const pdata = await api("POST", "/prompts/list", { page: 1, page_size: 100 });
@@ -3327,29 +3343,11 @@ async function editAppConfig(appCode) {
       }).join("");
     } catch {}
 
-    // 4. 已绑定的数据源（从 detail 返回的 dataSourceConfigs 获取）
-    const boundDsIds = new Set(dsConfigs.map(ds => String(ds.databaseId)));
-    const boundDsNames = new Set(dsConfigs.map(ds => ds.dbName).filter(Boolean));
-    // dbName → tableNames 映射（用于回显预选表）
-    const boundTablesMap = {};
-    dsConfigs.forEach(ds => {
-      if (ds.dbName && ds.tableNames) boundTablesMap[ds.dbName] = ds.tableNames;
-    });
-
-    // 5. 渲染数据源勾选框（仅勾选，不自动展开表选择器）
-    const dsCheckboxes = externalDs.map(ds => {
-      const dsId = ds.id;
-      const dbName = ds.dbName || ds.name;
-      const isChecked = boundDsIds.has(String(dsId)) || boundDsNames.has(dbName);
-      const presetTables = boundTablesMap[dbName] || [];
-      return `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(dbName)}" data-ds-id="${dsId}" data-ds-desc="${escapeAttr(ds.description || '')}" ${isChecked ? "checked" : ""} onchange="onAppDsCheck(this, 'edit')"> <span>${escapeHtml(dbName)}</span>${ds.description ? ` <span style="color:var(--text-tertiary);font-size:11px">${escapeHtml(ds.description.slice(0, 30))}</span>` : ""}</label><div class="app-table-picker" id="edit-tables-${dsId}" style="display:none;margin:2px 0 6px 24px;" data-preset='${presetTables.length ? escapeAttr(JSON.stringify(presetTables)) : ""}'></div>`;
-    }).join("");
-
-    // 6. 模型下拉
+    // 5. 模型下拉
     const currentModel = modelConfig.modelType || "";
     const modelOptions = externalModels.map(m => `<option value="${escapeAttr(m.modelName)}" ${m.modelName === currentModel ? "selected" : ""}>${escapeHtml(m.modelName)}${m.sourceName ? ` (${escapeHtml(m.sourceName)})` : ""}</option>`).join("");
 
-    // 7. 模型配置参数
+    // 6. 模型配置参数
     const temperature = modelConfig.temperature ?? 0.6;
     const maxTokens = modelConfig.maxTokens ?? 4000;
     const topP = modelConfig.topP ?? 1.0;
@@ -3359,8 +3357,17 @@ async function editAppConfig(appCode) {
       <div class="form-field"><label>应用名称</label><input class="input" id="edit-app-name" value="${escapeAttr(d.appName || "")}"></div>
       <div class="form-field"><label>应用描述</label><input class="input" id="edit-app-describe" value="${escapeAttr(d.remark || "")}"></div>
       <div class="form-field"><label>💬 开场白</label><input class="input" id="edit-app-opening" value="${escapeAttr(d.openingMessage || "")}" placeholder="如：你好，我是数据分析助手"></div>
-      <div class="form-field"><label>📊 数据源（选完后点下方按钮编辑预选表）</label><div class="checkbox-group" id="edit-app-databases">${dsCheckboxes}</div><div class="form-hint" id="edit-app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">${boundDsIds.size || boundDsNames.size} 个已选</div><button class="btn btn-sm" style="margin-top:6px" onclick="expandTablePickers('edit')">📋 编辑已选数据表</button></div>
-      <div class="form-field"><label>🤖 模型</label><select class="select" id="edit-app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
+      <div class="ds-table-section">
+        <div class="ds-section-header">
+          <span class="ds-section-title">数据库数据源</span>
+          <button class="btn btn-sm" onclick="showDsManagerPage()"><i class="fa-solid fa-gear"></i> 数据源管理</button>
+        </div>
+        <div id="edit-ds-table-wrap"></div>
+        <div style="text-align:right; margin-top:8px;">
+          <button class="btn btn-primary btn-sm" onclick="showSelectDsModal()">+ 添加数据源</button>
+        </div>
+      </div>
+      <div class="form-field" style="margin-top:16px"><label> 模型</label><select class="select" id="edit-app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
       <div class="form-row">
         <div class="form-field form-field-half"><label>温度</label><input class="input" id="edit-app-temperature" type="number" step="0.1" value="${temperature}"></div>
         <div class="form-field form-field-half"><label>最大 token</label><input class="input" id="edit-app-max-tokens" type="number" value="${maxTokens}"></div>
@@ -3375,30 +3382,391 @@ async function editAppConfig(appCode) {
       { text: "取消", class: "btn", action: "closeModalDirect()" },
       { text: "保存", class: "btn btn-primary", action: `submitEditAppConfig('${appCode}')` },
     ]);
+
+    // 渲染数据源表格
+    setTimeout(() => renderDsTable(), 50);
   } catch (e) { toast("获取应用详情失败: " + e.message, "error"); }
 }
 
-function updateEditAppDbSummary() {
-  const checked = document.querySelectorAll('#edit-app-databases input[type="checkbox"]:checked');
-  const summary = document.getElementById("edit-app-db-summary");
-  if (summary) {
-    summary.textContent = checked.length ? `已选 ${checked.length} 个: ${Array.from(checked).map(cb => cb.value).join(", ")}` : "未选择数据源";
+// 渲染编辑弹窗中的数据源表格
+function renderDsTable() {
+  const wrap = document.getElementById("edit-ds-table-wrap");
+  if (!wrap) return;
+  if (!_editBoundDs.length) {
+    wrap.innerHTML = `<div class="ds-empty" style="text-align:center;padding:32px 20px;color:var(--text-tertiary);font-size:13px;border:1px solid var(--border-color);border-radius:8px;">暂无数据源，请点击上方按钮添加</div>`;
+    return;
+  }
+  let html = `<table class="ds-bound-table"><thead><tr><th>数据源名称</th><th>数据源类型</th><th style="width:200px">操作</th></tr></thead><tbody>`;
+  _editBoundDs.forEach((ds, idx) => {
+    const dbTypeLabel = ds.dbType === 4 ? "Neo4j" : "MySQL";
+    const tagClass = ds.dbType === 4 ? "ds-tag-neo4j" : "ds-tag-mysql";
+    html += `<tr>
+      <td>${escapeHtml(ds.dbName || ds.name || "")}</td>
+      <td><span class="ds-tag ${tagClass}">${dbTypeLabel}</span></td>
+      <td>
+        <button class="ds-action-link" onclick="dsEditTestFromModal(${idx})">测试连接</button>
+        <button class="ds-action-link" onclick="showDsEditPage(${idx})">编辑</button>
+        <button class="ds-action-link ds-action-danger" onclick="removeBoundDs(${idx})">删除</button>
+      </td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
+}
+
+// 从编辑弹窗中删除已选数据源
+function removeBoundDs(idx) {
+  _editBoundDs.splice(idx, 1);
+  renderDsTable();
+}
+
+// 从编辑弹窗中测试连接（暂用 toast 提示，后端接口后续实现）
+async function dsEditTestFromModal(idx) {
+  const ds = _editBoundDs[idx];
+  if (!ds) return;
+  toast(`测试连接: ${ds.dbName || ds.name}（接口待实现）`, "info");
+  // TODO: 后端实现 testConnection 接口后对接
+}
+
+// ===== 选择数据源弹窗 =====
+let _selectDsAll = [];       // 全量数据源
+let _selectDsFiltered = [];  // 搜索过滤后
+let _selectDsPage = 1;
+let _selectDsPageSize = 10;
+let _selectDsChecked = new Set();  // 已勾选的 ds id
+
+async function showSelectDsModal() {
+  // 获取全量数据源
+  try {
+    const resp = await api("POST", "/knowledge/llm/userDataSource/get/page/v1", { currentPage: 1, pageSize: 1000, dbName: "" });
+    _selectDsAll = (resp.data || []);
+  } catch (e) {
+    toast("获取数据源列表失败: " + e.message, "error");
+    return;
+  }
+  // 初始化已勾选 = 当前已绑定的
+  _selectDsChecked = new Set(_editBoundDs.map(ds => ds.id));
+  _selectDsPage = 1;
+  _selectDsFiltered = [..._selectDsAll];
+
+  _renderSelectDsModal();
+}
+
+function _renderSelectDsModal() {
+  const total = _selectDsFiltered.length;
+  const totalPages = Math.max(1, Math.ceil(total / _selectDsPageSize));
+  if (_selectDsPage > totalPages) _selectDsPage = totalPages;
+  const start = (_selectDsPage - 1) * _selectDsPageSize;
+  const pageData = _selectDsFiltered.slice(start, start + _selectDsPageSize);
+
+  const dbTypeLabel = (t) => t === 4 ? "Neo4j" : "MySQL";
+
+  let rows = pageData.map(ds => {
+    const checked = _selectDsChecked.has(ds.id) ? "checked" : "";
+    return `<tr>
+      <td><input type="checkbox" ${checked} onchange="_toggleSelectDs(${ds.id}, this.checked)"></td>
+      <td>${escapeHtml(ds.dbName || ds.name || "")}</td>
+      <td>${dbTypeLabel(ds.dbType)}</td>
+      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(ds.jdbcUrl || "")}">${escapeHtml((ds.jdbcUrl || "").slice(0, 30))}…</td>
+      <td>${escapeHtml(ds.name || "")}</td>
+      <td>${escapeHtml((ds.createTime || "").slice(0, 19))}</td>
+    </tr>`;
+  }).join("");
+
+  if (!pageData.length) {
+    rows = `<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text-tertiary)">暂无数据源</td></tr>`;
+  }
+
+  // 分页按钮
+  let pageBtns = "";
+  for (let i = 1; i <= totalPages; i++) {
+    pageBtns += `<button class="page-btn ${i === _selectDsPage ? 'active' : ''}" onclick="_selectDsGoPage(${i})">${i}</button>`;
+  }
+
+  const selectedCount = _selectDsChecked.size;
+
+  openModal("选择数据源", `
+    <div class="select-ds-modal">
+      <div class="select-ds-search">
+        <input class="input" placeholder="搜索数据源名称" oninput="_filterSelectDs(this.value)" id="select-ds-search-input">
+      </div>
+      <div class="select-ds-table-wrap">
+        <table class="select-ds-table">
+          <thead><tr>
+            <th style="width:40px"></th>
+            <th>数据源名称</th>
+            <th>数据库类型</th>
+            <th>连接地址</th>
+            <th>数据库名称</th>
+            <th>创建时间</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="select-ds-pagination">
+        <span>共 ${total} 条</span>
+        <div class="page-btns">
+          <button class="page-btn" ${_selectDsPage <= 1 ? 'disabled' : ''} onclick="_selectDsGoPage(${_selectDsPage - 1})">&lt;</button>
+          ${pageBtns}
+          <button class="page-btn" ${_selectDsPage >= totalPages ? 'disabled' : ''} onclick="_selectDsGoPage(${_selectDsPage + 1})">&gt;</button>
+        </div>
+      </div>
+      <div class="select-ds-footer">
+        <span class="select-ds-selected-count">已选择 <strong>${selectedCount}</strong> 项</span>
+        <div style="display:flex;gap:8px">
+          <button class="btn" onclick="closeModalDirect()">取消</button>
+          <button class="btn btn-primary" onclick="_confirmSelectDs()">确认添加</button>
+        </div>
+      </div>
+    </div>
+  `, []);  // 无默认 footer 按钮，自定义 footer 在 body 内
+}
+
+function _filterSelectDs(keyword) {
+  const kw = keyword.toLowerCase().trim();
+  _selectDsFiltered = kw
+    ? _selectDsAll.filter(ds => (ds.dbName || ds.name || "").toLowerCase().includes(kw))
+    : [..._selectDsAll];
+  _selectDsPage = 1;
+  _renderSelectDsModal();
+  // 恢复搜索框焦点和值
+  const input = document.getElementById("select-ds-search-input");
+  if (input) { input.value = keyword; input.focus(); }
+}
+
+function _toggleSelectDs(dsId, checked) {
+  if (checked) _selectDsChecked.add(dsId); else _selectDsChecked.delete(dsId);
+  // 更新计数
+  const countEl = document.querySelector(".select-ds-selected-count strong");
+  if (countEl) countEl.textContent = _selectDsChecked.size;
+}
+
+function _selectDsGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_selectDsFiltered.length / _selectDsPageSize));
+  if (page < 1 || page > totalPages) return;
+  _selectDsPage = page;
+  _renderSelectDsModal();
+  // 恢复搜索框
+  const searchInput = document.getElementById("select-ds-search-input");
+  if (searchInput) {
+    const kw = searchInput.value;
+    setTimeout(() => { searchInput.value = kw; searchInput.focus(); }, 10);
   }
 }
 
-async function submitEditAppConfig(appCode) {
-  // 收集选中的数据源 → 组装 dataSourceConfigs
-  const dataSourceConfigs = [];
-  document.querySelectorAll('#edit-app-databases input[type="checkbox"]:checked').forEach(cb => {
-    const dbName = cb.value;
-    const dsId = parseInt(cb.getAttribute("data-ds-id")) || 0;
-    const picker = document.getElementById(`edit-tables-${dsId}`);
-    let tableNames = [];
-    if (picker && picker.style.display !== "none") {
-      tableNames = Array.from(picker.querySelectorAll(".app-table-cb:checked")).map(c => c.value);
+async function _confirmSelectDs() {
+  // 找出新勾选的数据源（不在 _editBoundDs 中的）
+  const existingIds = new Set(_editBoundDs.map(ds => ds.id));
+  for (const dsId of _selectDsChecked) {
+    if (existingIds.has(dsId)) continue;
+    const ds = _selectDsAll.find(d => d.id === dsId);
+    if (ds) {
+      _editBoundDs.push({ ...ds, tableNames: [] });
     }
-    dataSourceConfigs.push({ databaseId: dsId, dbName: dbName, tableNames: tableNames });
+  }
+  closeModalDirect();
+  renderDsTable();
+}
+
+// ===== 数据源编辑页面（全屏双栏布局） =====
+let _dsEditCurrentIdx = -1;   // 当前编辑的数据源在 _editBoundDs 中的索引
+let _dsEditTables = [];        // 表列表 [{tableName, comment}]
+let _dsEditSelectedTables = new Set();  // 已勾选的表名
+let _dsEditActiveTable = "";   // 当前右侧展示的表名
+let _dsEditColumnInfo = {};    // tableName → [{columnName, comment}]
+
+function showDsEditPage(idx) {
+  _dsEditCurrentIdx = idx;
+  const ds = _editBoundDs[idx];
+  if (!ds) return;
+  _dsEditTables = [];
+  _dsEditSelectedTables = new Set(ds.tableNames || []);
+  _dsEditActiveTable = "";
+  _dsEditColumnInfo = {};
+
+  document.getElementById("ds-edit-subtitle").textContent = `数据源: ${ds.dbName || ds.name || ""}`;
+  document.getElementById("ds-edit-status").textContent = "";
+  document.getElementById("ds-edit-status").className = "ds-status";
+  document.getElementById("ds-edit-table-tree").innerHTML = `<div class="empty-state" style="padding:24px"><div class="empty-state-text">请先测试连接</div></div>`;
+  document.getElementById("ds-edit-right-header").style.display = "none";
+  document.getElementById("ds-edit-right-body").innerHTML = `<div class="empty-state" style="padding:48px"><div class="empty-state-text">请在左侧选择一个数据表</div></div>`;
+
+  document.getElementById("ds-edit-page").style.display = "flex";
+}
+
+function hideDsEditPage() {
+  document.getElementById("ds-edit-page").style.display = "none";
+  _dsEditCurrentIdx = -1;
+  // 回编辑弹窗时刷新表格（可能表选择有变化）
+  renderDsTable();
+}
+
+async function dsEditTestConnection() {
+  const ds = _editBoundDs[_dsEditCurrentIdx];
+  if (!ds) return;
+  const statusEl = document.getElementById("ds-edit-status");
+  statusEl.textContent = "连接中...";
+  statusEl.className = "ds-status";
+
+  try {
+    // TODO: 后端实现 testConnection + getTablesFromDataSource 接口后对接
+    // 目前用本地 schema 接口模拟
+    const data = await api("GET", `/datasources/${ds.id}/schema`);
+    _dsEditTables = (data.schema?.tables || []).map(t => ({ tableName: t.table_name, comment: t.table_comment || "" }));
+    statusEl.textContent = "连接成功";
+    statusEl.className = "ds-status ds-status-ok";
+    _renderDsEditTableTree();
+  } catch (e) {
+    statusEl.textContent = "连接失败: " + e.message;
+    statusEl.className = "ds-status";
+    statusEl.style.color = "var(--danger)";
+  }
+}
+
+function _renderDsEditTableTree() {
+  const tree = document.getElementById("ds-edit-table-tree");
+  if (!_dsEditTables.length) {
+    tree.innerHTML = `<div class="empty-state" style="padding:24px"><div class="empty-state-text">该数据源没有数据表</div></div>`;
+    return;
+  }
+  let html = `<div class="tree-selected-count">已选择 ${_dsEditSelectedTables.size} 项</div>`;
+  _dsEditTables.forEach(t => {
+    const checked = _dsEditSelectedTables.has(t.tableName) ? "checked" : "";
+    const active = _dsEditActiveTable === t.tableName ? "active" : "";
+    html += `<div class="tree-item ${active}" onclick="dsEditSelectTable('${escapeAttr(t.tableName)}')">
+      <input type="checkbox" ${checked} onclick="event.stopPropagation(); dsEditToggleTable('${escapeAttr(t.tableName)}', this.checked)">
+      <span class="tree-icon"><i class="fa-solid fa-table"></i></span>
+      <span>${escapeHtml(t.tableName)}</span>
+    </div>`;
   });
+  tree.innerHTML = html;
+}
+
+function dsEditToggleTable(tableName, checked) {
+  if (checked) _dsEditSelectedTables.add(tableName); else _dsEditSelectedTables.delete(tableName);
+  // 更新计数
+  const countEl = document.querySelector(".tree-selected-count");
+  if (countEl) countEl.textContent = `已选择 ${_dsEditSelectedTables.size} 项`;
+  // 如果取消勾选当前展示的表，关闭右侧
+  if (!checked && _dsEditActiveTable === tableName) {
+    _dsEditActiveTable = "";
+    document.getElementById("ds-edit-right-header").style.display = "none";
+    document.getElementById("ds-edit-right-body").innerHTML = `<div class="empty-state" style="padding:48px"><div class="empty-state-text">请在左侧选择一个数据表</div></div>`;
+  }
+  _renderDsEditTableTree();
+}
+
+function dsEditSelectTable(tableName) {
+  if (!_dsEditSelectedTables.has(tableName)) return;  // 未勾选的表不能查看详情
+  _dsEditActiveTable = tableName;
+  _renderDsEditTableTree();  // 更新 active 高亮
+  _renderDsEditRightPanel(tableName);
+}
+
+async function _renderDsEditRightPanel(tableName) {
+  const header = document.getElementById("ds-edit-right-header");
+  const body = document.getElementById("ds-edit-right-body");
+
+  // 表标签头
+  header.style.display = "flex";
+  header.innerHTML = `<span class="ds-table-tag">${escapeHtml(tableName)} <span class="remove-tag" onclick="dsEditToggleTable('${escapeAttr(tableName)}', false); _renderDsEditTableTree();">×</span></span>`;
+
+  body.innerHTML = `<div style="text-align:center;padding:48px;color:var(--text-tertiary)">加载中...</div>`;
+
+  // 获取列信息
+  if (!_dsEditColumnInfo[tableName]) {
+    const ds = _editBoundDs[_dsEditCurrentIdx];
+    try {
+      const resp = await api("POST", "/knowledge/llm/userDataSource/table/getComments/v1", { id: ds.id, tableName: tableName });
+      _dsEditColumnInfo[tableName] = (resp.data || []);
+    } catch (e) {
+      _dsEditColumnInfo[tableName] = [];
+      toast("获取列信息失败: " + e.message, "error");
+    }
+  }
+
+  const cols = _dsEditColumnInfo[tableName] || [];
+  const tableObj = _dsEditTables.find(t => t.tableName === tableName);
+  const tableComment = tableObj?.comment || "";
+
+  let fieldRows = cols.map(c => `<tr>
+    <td>${escapeHtml(c.columnName || "")}</td>
+    <td><input class="ds-field-comment" data-col="${escapeAttr(c.columnName)}" value="${escapeAttr(c.comment || "")}" placeholder="输入字段描述"></td>
+  </tr>`).join("");
+
+  if (!cols.length) {
+    fieldRows = `<tr><td colspan="2" style="text-align:center;padding:24px;color:var(--text-tertiary)">暂无字段信息</td></tr>`;
+  }
+
+  body.innerHTML = `
+    <div class="ds-hint">请检查或修改数据库描述与字段详细描述，描述越详细，分析效果越精准，建议仔细检测或修改</div>
+    <div class="ds-desc-label">数据库描述</div>
+    <input class="ds-desc-input" id="ds-edit-table-desc" value="${escapeAttr(tableComment)}" placeholder="输入表描述">
+    <div class="ds-desc-label">数据库字段</div>
+    <table class="ds-fields-table">
+      <thead><tr><th style="width:40%">字段名称</th><th>字段描述</th></tr></thead>
+      <tbody>${fieldRows}</tbody>
+    </table>
+    <div style="text-align:right;margin-top:16px">
+      <button class="btn btn-primary" onclick="dsEditSaveTableComment('${escapeAttr(tableName)}')">确认修改并入库</button>
+    </div>
+  `;
+}
+
+async function dsEditSaveTableComment(tableName) {
+  const ds = _editBoundDs[_editBoundDs.findIndex((d, i) => i === _dsEditCurrentIdx)];
+  if (!ds) return;
+  const tableDesc = document.getElementById("ds-edit-table-desc")?.value || "";
+  const colInputs = document.querySelectorAll(".ds-field-comment");
+  const tableColumnInfos = [];
+  colInputs.forEach(inp => {
+    tableColumnInfos.push({ columnName: inp.dataset.col, comment: inp.value });
+  });
+
+  try {
+    await api("POST", "/knowledge/llm/userDataSource/table/updateTableComments/v1", {
+      id: ds.id,
+      tableName: tableName,
+      tableComment: tableDesc,
+      tableColumnInfos: tableColumnInfos,
+    });
+    // 更新本地缓存
+    const t = _dsEditTables.find(t => t.tableName === tableName);
+    if (t) t.comment = tableDesc;
+    if (_dsEditColumnInfo[tableName]) {
+      tableColumnInfos.forEach(tc => {
+        const col = _dsEditColumnInfo[tableName].find(c => c.columnName === tc.columnName);
+        if (col) col.comment = tc.comment;
+      });
+    }
+    toast("修改成功", "success");
+  } catch (e) {
+    toast("修改失败: " + e.message, "error");
+  }
+}
+
+async function dsEditSave() {
+  // 更新 _editBoundDs 中当前数据源的 tableNames
+  if (_dsEditCurrentIdx >= 0 && _dsEditCurrentIdx < _editBoundDs.length) {
+    _editBoundDs[_dsEditCurrentIdx].tableNames = Array.from(_dsEditSelectedTables);
+  }
+  hideDsEditPage();
+  toast("已保存", "success");
+}
+
+// 数据源管理页面跳转（暂用 toast 提示，后续实现独立页面）
+function showDsManagerPage() {
+  // 跳转到数据源管理页
+  navigate("datasources");
+}
+
+async function submitEditAppConfig(appCode) {
+  // 从 _editBoundDs 收集数据源配置
+  const dataSourceConfigs = _editBoundDs.map(ds => ({
+    databaseId: ds.id || 0,
+    dbName: ds.dbName || ds.name || "",
+    tableNames: ds.tableNames || [],
+  }));
 
   // 构造 modelConfig
   const modelConfig = {

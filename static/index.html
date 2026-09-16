@@ -362,6 +362,40 @@
   </main>
 </div>
 
+<!-- ===== 数据源编辑页面（全屏覆盖） ===== -->
+<div class="ds-edit-page" id="ds-edit-page" style="display:none;">
+  <div class="ds-edit-header">
+    <button class="ds-edit-back" onclick="hideDsEditPage()"><i class="fa-solid fa-arrow-left"></i></button>
+    <div>
+      <div class="ds-edit-title">数据源编辑</div>
+      <div class="ds-edit-subtitle" id="ds-edit-subtitle">数据源: —</div>
+    </div>
+  </div>
+  <div class="ds-edit-body">
+    <div class="ds-edit-left">
+      <div class="ds-edit-toolbar">
+        <span class="ds-edit-subtitle" style="flex:1">状态</span>
+        <button class="btn btn-sm" id="ds-edit-test-btn" onclick="dsEditTestConnection()">测试连接并拉取数据库内容</button>
+        <span class="ds-status" id="ds-edit-status"></span>
+      </div>
+      <div class="ds-table-tree" id="ds-edit-table-tree">
+        <div class="empty-state" style="padding:24px"><div class="empty-state-text">请先测试连接</div></div>
+      </div>
+    </div>
+    <div class="ds-edit-right">
+      <div class="ds-edit-right-header" id="ds-edit-right-header" style="display:none;">
+        <!-- 动态渲染选中的表标签 -->
+      </div>
+      <div class="ds-edit-right-body" id="ds-edit-right-body">
+        <div class="empty-state" style="padding:48px"><div class="empty-state-text">请在左侧选择一个数据表</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="ds-edit-footer">
+    <button class="btn btn-primary" onclick="dsEditSave()">保存</button>
+  </div>
+</div>
+
 <!-- ===== 模态框 ===== -->
 <div class="modal-overlay" id="modal-overlay" style="display:none;" onclick="closeModal(event)" data-page-node-id="6gpglQXcNGdHzwoHrqX8UM">
   <div class="modal" id="modal-content" onclick="event.stopPropagation()" data-page-node-id="416HjZ7gnSr3NaZDllmS8z">
