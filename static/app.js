@@ -3141,7 +3141,7 @@ async function showCreateAppModal() {
     <div class="form-field" style="display:none;"><label>对话模式</label><select class="select" id="app-team-mode">
       <option value="chat_react_agent" selected>ReAct Agent（默认）</option>
     </select></div>
-    <div class="form-field"><label>📊 绑定数据源（可多选，可勾选预选数据表）</label><div class="checkbox-group" id="app-databases">${dsCheckboxes}</div><div class="form-hint" id="app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">未选择数据源</div></div>
+    <div class="form-field"><label>📊 绑定数据源（可多选，选完后点下方按钮编辑预选表）</label><div class="checkbox-group" id="app-databases">${dsCheckboxes}</div><div class="form-hint" id="app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">未选择数据源</div><button class="btn btn-sm" style="margin-top:6px" onclick="expandTablePickers('create')">📋 编辑已选数据表</button></div>
     <div class="form-field"><label>模型</label><select class="select" id="app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
     <div class="form-field"><label>📝 自定义提示词</label><select class="select" id="app-prompt"><option value="">不添加</option>${promptOptions}</select>
     <div class="form-hint" style="margin-top:4px">💡 选中的提示词会<strong>追加</strong>到默认 system prompt 的「Please Solve this task:」之前，作为业务约束/上下文补充。ReAct 格式约束保持不变。</div></div>
@@ -3165,36 +3165,47 @@ function updateAppDbSummary() {
   }
 }
 
-// === 应用数据源勾选 → 展开/收起该库的表选择器（创建与编辑共用） ===
+// === 应用数据源勾选 → 仅更新摘要，不自动展开表选择器（先选库，再点按钮编辑表） ===
 const _appTablePickerCache = {};  // dsId → tables [{table_name, table_comment}]
 async function onAppDsCheck(checkbox, mode) {
-  const dsId = checkbox.getAttribute("data-ds-id");
-  const picker = document.getElementById(`${mode}-tables-${dsId}`);
-  // 同步摘要（创建弹窗）
   if (mode === "create") updateAppDbSummary(); else updateEditAppDbSummary();
-  if (!picker) return;
-  if (!checkbox.checked) { picker.style.display = "none"; return; }
-  picker.style.display = "block";
-  if (picker.dataset.loaded === "1") return;  // 已加载过，保留用户勾选状态
-  picker.innerHTML = `<div style="color:var(--text-tertiary);font-size:12px;padding:4px">加载表列表...</div>`;
-  try {
-    let tables = _appTablePickerCache[dsId];
-    if (!tables) {
-      const data = await api("GET", `/datasources/${dsId}/schema`);
-      tables = (data.schema?.tables || []).map(t => ({ table_name: t.table_name, table_comment: t.table_comment || "" }));
-      _appTablePickerCache[dsId] = tables;
+  // 取消勾选时隐藏该库的表选择器
+  if (!checkbox.checked) {
+    const picker = document.getElementById(`${mode}-tables-${checkbox.getAttribute("data-ds-id")}`);
+    if (picker) picker.style.display = "none";
+  }
+}
+
+// 点击"编辑已选数据表"按钮 → 为所有已勾选数据库加载并展开表选择器
+async function expandTablePickers(mode) {
+  const containerId = mode === "create" ? "app-databases" : "edit-app-databases";
+  const checked = document.querySelectorAll(`#${containerId} input[type="checkbox"]:checked`);
+  if (!checked.length) { toast("请先选择数据源", "info"); return; }
+  for (const cb of checked) {
+    const dsId = cb.getAttribute("data-ds-id");
+    const picker = document.getElementById(`${mode}-tables-${dsId}`);
+    if (!picker) continue;
+    picker.style.display = "block";
+    if (picker.dataset.loaded === "1") continue;
+    picker.innerHTML = `<div style="color:var(--text-tertiary);font-size:12px;padding:4px">加载表列表...</div>`;
+    try {
+      let tables = _appTablePickerCache[dsId];
+      if (!tables) {
+        const data = await api("GET", `/datasources/${dsId}/schema`);
+        tables = (data.schema?.tables || []).map(t => ({ table_name: t.table_name, table_comment: t.table_comment || "" }));
+        _appTablePickerCache[dsId] = tables;
+      }
+      if (!tables.length) { picker.innerHTML = `<div style="color:var(--text-tertiary);font-size:12px;padding:4px">该库没有数据表</div>`; picker.dataset.loaded = "1"; continue; }
+      let preset = [];
+      try { preset = JSON.parse(picker.dataset.preset || "[]"); } catch {}
+      const presetSet = new Set(preset);
+      picker.innerHTML = `<div class="form-hint" style="margin:2px 0">可选：勾选该库要预选的数据表（不勾 = 问答时 LLM 自动选表）</div>` +
+        `<label class="checkbox-item" style="font-size:12px"><input type="checkbox" onchange="toggleAllTables(this, '${mode}', ${dsId})"> <span><strong>全选</strong></span></label>` +
+        tables.map(t => `<label class="checkbox-item" style="font-size:12px" title="${escapeAttr(t.table_comment || t.table_name)}"><input type="checkbox" class="app-table-cb" data-table="${escapeAttr(t.table_name)}" value="${escapeAttr(t.table_name)}" ${presetSet.has(t.table_name) ? "checked" : ""}> <span>${escapeHtml(t.table_name)}</span>${t.table_comment ? ` <span style="color:var(--text-tertiary)">${escapeHtml(t.table_comment.slice(0, 24))}</span>` : ""}</label>`).join("");
+      picker.dataset.loaded = "1";
+    } catch (e) {
+      picker.innerHTML = `<div style="color:var(--danger);font-size:12px;padding:4px">表列表加载失败: ${escapeHtml(e.message)}</div>`;
     }
-    if (!tables.length) { picker.innerHTML = `<div style="color:var(--text-tertiary);font-size:12px;padding:4px">该库没有数据表</div>`; picker.dataset.loaded = "1"; return; }
-    // 编辑模式：回显应用已保存的预选表
-    let preset = [];
-    try { preset = JSON.parse(picker.dataset.preset || "[]"); } catch {}
-    const presetSet = new Set(preset);
-    picker.innerHTML = `<div class="form-hint" style="margin:2px 0">可选：勾选该库要预选的数据表（不勾 = 问答时 LLM 自动选表）</div>` +
-      `<label class="checkbox-item" style="font-size:12px"><input type="checkbox" onchange="toggleAllTables(this, '${mode}', ${dsId})"> <span><strong>全选</strong></span></label>` +
-      tables.map(t => `<label class="checkbox-item" style="font-size:12px" title="${escapeAttr(t.table_comment || t.table_name)}"><input type="checkbox" class="app-table-cb" data-table="${escapeAttr(t.table_name)}" value="${escapeAttr(t.table_name)}" ${presetSet.has(t.table_name) ? "checked" : ""}> <span>${escapeHtml(t.table_name)}</span>${t.table_comment ? ` <span style="color:var(--text-tertiary)">${escapeHtml(t.table_comment.slice(0, 24))}</span>` : ""}</label>`).join("");
-    picker.dataset.loaded = "1";
-  } catch (e) {
-    picker.innerHTML = `<div style="color:var(--danger);font-size:12px;padding:4px">表列表加载失败: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -3285,14 +3296,25 @@ async function deleteApp(appCode, appName) {
   catch (e) { toast("删除失败: " + e.message, "error"); }
 }
 
-// 编辑应用配置（chat_mode/模型/推荐问题可改，数据源/知识库只读）
+// 编辑应用配置（对接外部平台 agent/detail + agent/update）
 async function editAppConfig(appCode) {
   try {
-    const data = await api("GET", `/apps/${appCode}`);
-    const app = data.app;
-    const res = app.resources || {};
-    const modelOptions = (State.modelList || []).map(m => `<option value="${escapeAttr(m.model_name)}" ${m.model_name === res.model ? "selected" : ""}>${escapeHtml(m.model_name)}</option>`).join("");
-    // 直接获取提示词列表
+    // 1. 调外部平台 detail 接口获取完整配置
+    const detailResp = await api("POST", "/knowledge/api/v1/agent/detail", { id: appCode });
+    const d = detailResp.data || {};
+    const varMap = d.varMap || {};
+    const modelConfig = varMap.modelConfig || {};
+    const dsConfigs = varMap.dataSourceConfigs || [];
+
+    // 2. 并行获取模型列表和数据源列表（外部平台格式）
+    const [mResp, dsResp] = await Promise.all([
+      api("POST", "/openPlatform/api/v1/model/config/page", { currentPage: 1, pageSize: 1000 }),
+      api("POST", "/knowledge/llm/userDataSource/get/page/v1", { currentPage: 1, pageSize: 1000, dbName: "" }),
+    ]);
+    const externalModels = (mResp.data || []).filter(m => m.status === 1);
+    const externalDs = (dsResp.data || []);
+
+    // 3. 获取提示词列表
     let promptOptions = "";
     try {
       const pdata = await api("POST", "/prompts/list", { page: 1, page_size: 100 });
@@ -3301,39 +3323,59 @@ async function editAppConfig(appCode) {
       promptOptions = prompts.map(p => {
         const name = p.prompt_name || p.name || "";
         const code = p.prompt_code || p.id || name;
-        return `<option value="${escapeAttr(code)}" ${code === res.prompt_template ? "selected" : ""}>${escapeHtml(name)}</option>`;
+        return `<option value="${escapeAttr(code)}" ${code === (d.settingDescription || "") ? "selected" : ""}>${escapeHtml(name)}</option>`;
       }).join("");
     } catch {}
-    const boundDbs = new Set(res.database_names || (res.database_name ? res.database_name.split(",").map(s => s.trim()) : []));
-    const boundTables = res.database_tables || {};
-    const dsCheckboxes = State.datasourceList.map(d => `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(d.db_name)}" data-ds-id="${d.id}" ${boundDbs.has(d.db_name) ? "checked" : ""} onchange="onAppDsCheck(this, 'edit')"> <span>${escapeHtml(d.db_name)}</span> <span class="tag tag-blue">${escapeHtml(d.db_type)}</span></label><div class="app-table-picker" id="edit-tables-${d.id}" style="display:none;margin:2px 0 6px 24px;" data-preset='${boundTables[d.db_name] ? escapeAttr(JSON.stringify(boundTables[d.db_name])) : ""}'></div>`).join("");
-    const kbOptions = (State.knowledgeSpaces || []).map(k => {
-      const name = typeof k === "string" ? k : (k.name || k.space_name || "");
-      return `<option value="${escapeAttr(name)}" ${name === res.knowledge_space ? "selected" : ""}>${escapeHtml(name)}</option>`;
+
+    // 4. 已绑定的数据源（从 detail 返回的 dataSourceConfigs 获取）
+    const boundDsIds = new Set(dsConfigs.map(ds => String(ds.databaseId)));
+    const boundDsNames = new Set(dsConfigs.map(ds => ds.dbName).filter(Boolean));
+    // dbName → tableNames 映射（用于回显预选表）
+    const boundTablesMap = {};
+    dsConfigs.forEach(ds => {
+      if (ds.dbName && ds.tableNames) boundTablesMap[ds.dbName] = ds.tableNames;
+    });
+
+    // 5. 渲染数据源勾选框（仅勾选，不自动展开表选择器）
+    const dsCheckboxes = externalDs.map(ds => {
+      const dsId = ds.id;
+      const dbName = ds.dbName || ds.name;
+      const isChecked = boundDsIds.has(String(dsId)) || boundDsNames.has(dbName);
+      const presetTables = boundTablesMap[dbName] || [];
+      return `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(dbName)}" data-ds-id="${dsId}" data-ds-desc="${escapeAttr(ds.description || '')}" ${isChecked ? "checked" : ""} onchange="onAppDsCheck(this, 'edit')"> <span>${escapeHtml(dbName)}</span>${ds.description ? ` <span style="color:var(--text-tertiary);font-size:11px">${escapeHtml(ds.description.slice(0, 30))}</span>` : ""}</label><div class="app-table-picker" id="edit-tables-${dsId}" style="display:none;margin:2px 0 6px 24px;" data-preset='${presetTables.length ? escapeAttr(JSON.stringify(presetTables)) : ""}'></div>`;
     }).join("");
 
-    openModal(`编辑应用 — ${app.app_name}`, `
-      <div class="form-field"><label>应用名称</label><input class="input" id="edit-app-name" value="${escapeAttr(app.app_name || "")}"></div>
-      <div class="form-field"><label>应用描述</label><input class="input" id="edit-app-describe" value="${escapeAttr(app.app_describe || "")}"></div>
-      <div class="form-field" style="display:none;"><label>对话模式</label><select class="select" id="edit-app-chat-mode">
-        <option value="chat_react_agent" selected>ReAct Agent（默认）</option>
-      </select></div>
-      <div class="form-field"><label>📊 数据源（可多选，可勾选预选数据表）</label><div class="checkbox-group" id="edit-app-databases">${dsCheckboxes}</div><div class="form-hint" id="edit-app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">${boundDbs.size ? `已选 ${boundDbs.size} 个` : "未选择数据源"}</div></div>
-      <div class="form-field"><label>📚 知识库</label><select class="select" id="edit-app-knowledge"><option value="">不绑定</option>${kbOptions}</select></div>
-      <div class="form-field"><label>模型</label><select class="select" id="edit-app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
-      <div class="form-field"><label>📝 自定义提示词</label><select class="select" id="edit-app-prompt"><option value="">不添加</option>${promptOptions}</select>
-      <div class="form-hint" style="margin-top:4px">💡 追加到默认 system prompt 的「Please Solve this task:」之前，作为业务约束/上下文。ReAct 格式约束保持不变。</div></div>
-      <div class="form-field"><label>推荐问题（每行一个）</label><textarea class="input" id="edit-app-questions" rows="3">${(app.recommend_questions || []).join("\n")}</textarea></div>
-      <div class="form-hint">💡 可修改数据源、预选数据表、知识库、对话模式、模型和推荐问题。</div>
+    // 6. 模型下拉
+    const currentModel = modelConfig.modelType || "";
+    const modelOptions = externalModels.map(m => `<option value="${escapeAttr(m.modelName)}" ${m.modelName === currentModel ? "selected" : ""}>${escapeHtml(m.modelName)}${m.sourceName ? ` (${escapeHtml(m.sourceName)})` : ""}</option>`).join("");
+
+    // 7. 模型配置参数
+    const temperature = modelConfig.temperature ?? 0.6;
+    const maxTokens = modelConfig.maxTokens ?? 4000;
+    const topP = modelConfig.topP ?? 1.0;
+    const historyRounds = modelConfig.historyRounds ?? 3;
+
+    openModal(`编辑应用 — ${escapeHtml(d.appName || "")}`, `
+      <div class="form-field"><label>应用名称</label><input class="input" id="edit-app-name" value="${escapeAttr(d.appName || "")}"></div>
+      <div class="form-field"><label>应用描述</label><input class="input" id="edit-app-describe" value="${escapeAttr(d.remark || "")}"></div>
+      <div class="form-field"><label>💬 开场白</label><input class="input" id="edit-app-opening" value="${escapeAttr(d.openingMessage || "")}" placeholder="如：你好，我是数据分析助手"></div>
+      <div class="form-field"><label>📊 数据源（选完后点下方按钮编辑预选表）</label><div class="checkbox-group" id="edit-app-databases">${dsCheckboxes}</div><div class="form-hint" id="edit-app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">${boundDsIds.size || boundDsNames.size} 个已选</div><button class="btn btn-sm" style="margin-top:6px" onclick="expandTablePickers('edit')">📋 编辑已选数据表</button></div>
+      <div class="form-field"><label>🤖 模型</label><select class="select" id="edit-app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
+      <div class="form-row">
+        <div class="form-field form-field-half"><label>温度</label><input class="input" id="edit-app-temperature" type="number" step="0.1" value="${temperature}"></div>
+        <div class="form-field form-field-half"><label>最大 token</label><input class="input" id="edit-app-max-tokens" type="number" value="${maxTokens}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-field form-field-half"><label>Top P</label><input class="input" id="edit-app-top-p" type="number" step="0.1" value="${topP}"></div>
+        <div class="form-field form-field-half"><label>历史轮次</label><input class="input" id="edit-app-history-rounds" type="number" value="${historyRounds}"></div>
+      </div>
+      <div class="form-field"><label>📝 提示词 / 设定描述</label><textarea class="input" id="edit-app-prompt" rows="3" placeholder="可选">${escapeHtml(d.settingDescription || "")}</textarea></div>
+      <div class="form-field"><label>推荐问题（每行一个）</label><textarea class="input" id="edit-app-questions" rows="3">${(d.guideQuestions || []).join("\n")}</textarea></div>
     `, [
       { text: "取消", class: "btn", action: "closeModalDirect()" },
       { text: "保存", class: "btn btn-primary", action: `submitEditAppConfig('${appCode}')` },
     ]);
-    // ★ 已勾选的数据源自动展开表选择器（回显预选表）
-    setTimeout(() => {
-      document.querySelectorAll('#edit-app-databases input[type="checkbox"]:checked').forEach(cb => onAppDsCheck(cb, "edit"));
-    }, 50);
-  } catch (e) { toast("获取详情失败: " + e.message, "error"); }
+  } catch (e) { toast("获取应用详情失败: " + e.message, "error"); }
 }
 
 function updateEditAppDbSummary() {
@@ -3345,22 +3387,52 @@ function updateEditAppDbSummary() {
 }
 
 async function submitEditAppConfig(appCode) {
-  const selectedDbs = Array.from(document.querySelectorAll('#edit-app-databases input[type="checkbox"]:checked')).map(cb => cb.value);
+  // 收集选中的数据源 → 组装 dataSourceConfigs
+  const dataSourceConfigs = [];
+  document.querySelectorAll('#edit-app-databases input[type="checkbox"]:checked').forEach(cb => {
+    const dbName = cb.value;
+    const dsId = parseInt(cb.getAttribute("data-ds-id")) || 0;
+    const picker = document.getElementById(`edit-tables-${dsId}`);
+    let tableNames = [];
+    if (picker && picker.style.display !== "none") {
+      tableNames = Array.from(picker.querySelectorAll(".app-table-cb:checked")).map(c => c.value);
+    }
+    dataSourceConfigs.push({ databaseId: dsId, dbName: dbName, tableNames: tableNames });
+  });
+
+  // 构造 modelConfig
+  const modelConfig = {
+    modelType: document.getElementById("edit-app-model").value,
+    temperature: parseFloat(document.getElementById("edit-app-temperature").value) || 0.6,
+    maxTokens: parseInt(document.getElementById("edit-app-max-tokens").value) || 4000,
+    topP: parseFloat(document.getElementById("edit-app-top-p").value) || 1.0,
+    frequencyPenalty: 0.0,
+    presencePenalty: 0.0,
+    enableThinking: false,
+    historyRounds: parseInt(document.getElementById("edit-app-history-rounds").value) || 3,
+    baseModel: "openai",
+  };
+
+  // 构造 agent/update 请求体（外部平台格式）
   const body = {
-    app_name: document.getElementById("edit-app-name").value,
-    app_describe: document.getElementById("edit-app-describe").value,
-    chat_mode: document.getElementById("edit-app-chat-mode").value,
-    database_names: selectedDbs,
-    database_tables: collectAppTableHints("edit"),
-    knowledge_space: document.getElementById("edit-app-knowledge").value,
-    model: document.getElementById("edit-app-model").value,
-    prompt_template: document.getElementById("edit-app-prompt").value,
-    temperature: 0.6,
-    max_new_tokens: 4000,
-    recommend_questions: document.getElementById("edit-app-questions").value.split("\n").map(s => s.trim()).filter(s => s),
+    id: appCode,
+    appName: document.getElementById("edit-app-name").value,
+    remark: document.getElementById("edit-app-describe").value,
+    openingMessage: document.getElementById("edit-app-opening").value,
+    guideQuestions: document.getElementById("edit-app-questions").value.split("\n").map(s => s.trim()).filter(s => s),
+    settingDescription: document.getElementById("edit-app-prompt").value,
+    type: 2,
+    limited: 0,
+    managementMode: 3,
+    sessionType: 10,
+    varMap: {
+      modelConfig: modelConfig,
+      dataSourceConfigs: dataSourceConfigs,
+      knowledgeGraphConfigs: [],
+    },
   };
   try {
-    await api("POST", `/apps/${appCode}/edit`, body);
+    await api("POST", "/knowledge/api/v1/agent/update", body);
     toast("修改成功", "success");
     closeModalDirect();
     loadApps();

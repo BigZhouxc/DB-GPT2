@@ -3211,6 +3211,17 @@ curl -X POST http://localhost:8080/knowledge/api/v1/agent/update \
 3. 写辅助表 `app_extra_config`（opening_message / guide_questions / model_config_extra / temperature / max_new_tokens）
 4. 同步写 `recommend_question` 表（user_code 与 gpts_app 一致，params 设为 `{}` 避免 DB-GPT detail 查询 JSON 解析错误）
 
+**前端联动**（2026-09-16）：
+
+| 前端函数 | 调用接口 | 说明 |
+|----------|----------|------|
+| `editAppConfig(appCode)` | `POST /knowledge/api/v1/agent/detail` | 编辑弹窗加载：获取应用完整配置（含 modelConfig / dataSourceConfigs / guideQuestions / openingMessage） |
+| `submitEditAppConfig(appCode)` | `POST /knowledge/api/v1/agent/update` | 编辑保存：提交 AgentUpdateRequest 格式，含模型配置 + 数据源选表 + 开场白 + 引导问题 |
+| `expandTablePickers(mode)` | — | 先勾选数据库，再点"编辑已选数据表"按钮统一加载表列表（不自动展开） |
+| `onAppDsCheck(checkbox, mode)` | — | 勾选/取消勾选数据源时仅更新摘要，不再自动展开表选择器 |
+| `showCreateAppModal()` | `POST /openPlatform/api/v1/model/config/page` + `POST /knowledge/llm/userDataSource/get/page/v1` | 创建弹窗加载模型和数据源列表（外部平台格式） |
+| `createApp()` | `POST /api/v1/agent/insert` | 创建智能体（AgentInsertRequest 格式） |
+
 ---
 
 ## 12. 评估管理
