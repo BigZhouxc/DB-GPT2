@@ -108,14 +108,19 @@ def _is_tool_internal_conv(cv: dict) -> bool:
     return False
 
 
-def _update_conv_binding(conv_uid: str, datasource_id: int = None, knowledge_space_id: int = None, prompt_code: str = None, status: str = None):
+def _update_conv_binding(conv_uid: str, datasource_id: int = None, knowledge_space_id: int = None, prompt_code: str = None, status: str = None, datasource_names: str = None):
     """更新会话绑定的数据源/知识库/提示词/状态（写入 chat_history 表）。
     chat_history 记录可能在创建会话时还不存在（DB-GPT 在首次发消息后才插入），
     所以用 INSERT ... ON DUPLICATE KEY UPDATE 兼容两种情况。
+
+    datasource_names: 逗号分隔的全量数据源名称（多库会话存全量，
+    datasource_id 单值列仅存主库 ID 用于兼容）。
     """
     fields, values = [], []
     if datasource_id is not None:
         fields.append("datasource_id = %s"); values.append(datasource_id)
+    if datasource_names is not None:
+        fields.append("datasource_names = %s"); values.append(datasource_names)
     if knowledge_space_id is not None:
         fields.append("knowledge_space_id = %s"); values.append(knowledge_space_id)
     if prompt_code is not None:
@@ -151,7 +156,7 @@ def _get_conv_binding(conv_uid: str) -> dict:
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
-                "SELECT ch.datasource_id, ch.knowledge_space_id, ch.prompt_code, ch.status, "
+                "SELECT ch.datasource_id, ch.datasource_names, ch.knowledge_space_id, ch.prompt_code, ch.status, "
                 "ks.name as knowledge_space_name, "
                 "cc.db_name as database_name "
                 "FROM chat_history ch "
@@ -163,13 +168,16 @@ def _get_conv_binding(conv_uid: str) -> dict:
             row = cursor.fetchone()
             if not row:
                 return {}
+            # 多库会话：优先取 datasource_names（全量逗号分隔），
+            # 为空时回退 JOIN connect_config 的单库名（存量数据回填已覆盖）
+            db_name = (row.get("datasource_names") or "").strip() or (row.get("database_name") or "")
             result = {
                 "datasource_id": row.get("datasource_id"),
                 "knowledge_space_id": row.get("knowledge_space_id"),
                 "prompt_code": row.get("prompt_code"),
                 "status": row.get("status") or "active",
                 "knowledge_space": row.get("knowledge_space_name") or "",
-                "database_name": row.get("database_name") or "",
+                "database_name": db_name,
             }
             return result
     finally:
@@ -388,9 +396,9 @@ class SaveBindingRequest(BaseModel):
 async def save_binding(req: SaveBindingRequest):
     """保存/更新会话的数据源/知识库/提示词绑定。
 
-    datasource_name 支持逗号分隔多个名称，取第一个存在的名称解析为 datasource_id
-    （chat_history.datasource_id 为单值列；多库会话以主库为准，
-    前端展示用 database_name 字段冗余存完整列表）。
+    datasource_name 支持逗号分隔多个名称：
+    - 全量名称写入 datasource_names 列（多库会话展示用）
+    - 主库（第一个存在的名称）ID 写入 datasource_id 单值列（兼容）
     """
     try:
         ids = _resolve_ids(
@@ -398,8 +406,8 @@ async def save_binding(req: SaveBindingRequest):
             knowledge_space_name=req.knowledge_space_name,
         )
         # 解析数据源 ID（支持逗号分隔多名称）
-        if req.datasource_name and "datasource_id" not in ids:
-            names = [n.strip() for n in str(req.datasource_name).split(",") if n.strip()]
+        names = [n.strip() for n in str(req.datasource_name or "").split(",") if n.strip()]
+        if names and "datasource_id" not in ids:
             try:
                 async with httpx.AsyncClient(timeout=10, trust_env=False) as hc:
                     ds_resp = await hc.get("http://localhost:8080/datasources")
@@ -418,6 +426,8 @@ async def save_binding(req: SaveBindingRequest):
             datasource_id=ids.get("datasource_id"),
             knowledge_space_id=ids.get("knowledge_space_id"),
             prompt_code=req.prompt_code,
+            # 全量名称（逗号分隔）落库，读回时优先使用
+            datasource_names=",".join(names) if names else None,
         )
         return {"ok": True}
     except Exception as e:

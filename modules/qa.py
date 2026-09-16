@@ -99,6 +99,8 @@ async def _async_persist_binding(session: str, names: list, knowledge_space: str
                 datasource_id=ids.get("datasource_id"),
                 knowledge_space_id=ids.get("knowledge_space_id"),
                 prompt_code=prompt_code or None,
+                # 全量名称（逗号分隔）落库，读回时优先使用
+                datasource_names=",".join(names) if names else None,
             )
 
         await _asyncio.get_event_loop().run_in_executor(None, _do)
