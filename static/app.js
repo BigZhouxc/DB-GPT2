@@ -2921,6 +2921,14 @@ function _renderActiveSessions() {
 
 // 切换到指定活跃会话（按 convUid）
 function switchToActiveSession(convUid) {
+  // ★ 已在查看该会话：直接返回。
+  //   否则 _unparkSession 会清空 chat-messages 再找 parking slot，
+  //   而当前实时显示的消息从未被 park 过 → 清空后无可恢复内容，界面变空白
+  if (convUid && convUid === _currentActiveConvUid) {
+    _currentViewingConvUid = convUid;
+    return;
+  }
+
   const s = _sessionStateMap.get(convUid);
   if (!s) {
     // 缓存未命中，从后端恢复
