@@ -3424,12 +3424,123 @@ data: [DONE]
 
 ---
 
+## 14. 数据源管理接口（第三章）
+
+路径与外部平台完全一致，全部在 `modules/external.py` 无 prefix 路由。
+
+### 14.1 测试连接
+
+```
+POST /knowledge/llm/userDataSource/testConnection/v1
+```
+
+**两种模式**：
+
+模式A — 按已配置数据源ID测试：
+```json
+{"id": 114}
+```
+
+模式B — 编辑/创建时全量参数测试：
+```json
+{
+  "dbType": 0,
+  "ip": "10.12.61.23",
+  "port": 3299,
+  "name": "chase_book",
+  "username": "root1",
+  "password": "明文密码",
+  "dbName": "chase_book"
+}
+```
+
+**响应**（成功）：
+```json
+{"code": 200, "msg": "Success", "success": true, "data": "连接成功"}
+```
+
+**响应**（失败）：
+```json
+{"code": 500, "msg": "连接失败: <error>", "success": false, "data": null}
+```
+
+### 14.2 保存数据源（创建/更新）
+
+```
+POST /knowledge/llm/userDataSource/upsert/v1
+```
+
+**请求体**（无 id = 创建）：
+```json
+{
+  "dbName": "chase-tv",
+  "dbType": 0,
+  "dbSchema": "",
+  "description": "电视屏道",
+  "ip": "10.12.61.23",
+  "name": "chase_tv",
+  "port": 3299,
+  "username": "root1",
+  "password": "明文密码"
+}
+```
+
+**请求体**（有 id = 更新）：
+```json
+{
+  "id": 114,
+  "dbName": "测试_智能问数",
+  "dbType": 0,
+  "dbSchema": "",
+  "description": "测试_智能问数",
+  "ip": "10.12.61.23",
+  "name": "agent_test",
+  "port": 3299,
+  "username": "root1",
+  "password": "明文密码"
+}
+```
+
+**响应**：
+```json
+{"code": 200, "msg": "Success", "success": true, "data": 119}
+```
+`data` = 数据源 ID（创建时为新 ID，更新时为原 ID）。
+
+### 14.3 删除数据源
+
+```
+POST /knowledge/llm/userDataSource/delete/v1
+```
+
+**请求体**：
+```json
+{"id": 114, "isDeleted": 1}
+```
+
+**响应**：
+```json
+{"code": 200, "msg": "Success", "success": true, "data": true}
+```
+
+**前端对接**：
+- 数据源管理页改用 `POST /knowledge/llm/userDataSource/get/page/v1` 获取列表（分页+搜索）
+- 表格列：名称 / 类型 / 连接地址 / 备注 / 创建时间 / 操作（测试|编辑|注释|删除）
+- 搜索框实时过滤（`dbName` 参数）
+- 分页按钮（上一页/下一页）
+- 添加弹窗字段：类型(dbType下拉)/名称(name)/显示名(dbName)/主机/端口/用户名/密码/备注
+- 编辑弹窗：回显数据源详情 + 保存用 upsert 带 id
+- 测试连接：列表行按钮用 `{id}` 模式，弹窗内按钮用全量参数模式
+- 删除：确认后调 delete 接口
+
+---
+
 ## 附录：接口统计
 
 | 模块 | 接口数 | 路由前缀 | 备注 |
 |------|--------|----------|------|
 | 问答 | 7+2废弃 | `/ask` | 统一接口 + 会话管理 + 旧接口兼容 |
-| 数据源 | 8 | `/datasources` | |
+| 数据源 | 8 | `/datasources` | 本地接口保留（向下兼容） |
 | 知识库 | 11 | `/knowledge` | |
 | MCP 连接器 | 10 | `/connectors` | |
 | 会话 | 6 | `/conversations` | |
@@ -3437,7 +3548,7 @@ data: [DONE]
 | AWEL Flow | 5 | `/flows` | |
 | Prompt | 5 | `/prompts` | |
 | App | 2 | `/apps` | |
-| 外部平台兼容 | 10 | 无 prefix（与外部平台路径一致） | 模型配置/数据源配置/insert/detail/update/dbNamesByIds/getTables/getComments/updateComments/chatWithDb |
+| 外部平台兼容 | 13 | 无 prefix（与外部平台路径一致） | 模型配置/数据源配置/insert/detail/update/dbNamesByIds/getTables/getComments/updateComments/chatWithDb/testConnection/upsert/delete |
 | 评估 | 1 | `/evaluation` | |
 | 系统 | 2 | `/` `/health` | |
-| **合计** | **73** | - | 含 2 个 deprecated 旧接口 |
+| **合计** | **76** | - | 含 2 个 deprecated 旧接口 |

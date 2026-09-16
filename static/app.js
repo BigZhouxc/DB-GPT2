@@ -1318,29 +1318,65 @@ function escapeAttrForSrcdoc(s) {
 // ==========================================================================
 // 数据源管理
 // ==========================================================================
-async function loadDatasources() {
+// ==========================================================================
+// 数据源管理（对接外部平台接口）
+// ==========================================================================
+let _dsListPage = 1;
+let _dsListPageSize = 10;
+let _dsListSearch = "";
+
+async function loadDatasources(page) {
   const container = document.getElementById("ds-list");
   if (!container) return;
+  if (page) _dsListPage = page;
   container.innerHTML = `<div style="text-align:center;padding:40px"><div class="loading-spinner"></div></div>`;
   try {
-    const data = await api("GET", "/datasources");
-    State.datasourceList = data.datasources || [];
+    const resp = await api("POST", "/knowledge/llm/userDataSource/get/page/v1", {
+      currentPage: _dsListPage, pageSize: _dsListPageSize, dbName: _dsListSearch || "",
+    });
+    const items = resp.data || [];
+    const pageInfo = resp.pageInfo || {};
+    State.datasourceList = items;
     const badge = document.getElementById("badge-ds");
-    if (badge) badge.textContent = State.datasourceList.length || "";
+    if (badge) badge.textContent = pageInfo.total || items.length || "";
 
+    const totalPages = Math.ceil((pageInfo.total || items.length) / _dsListPageSize);
     let html = `<div class="stat-grid">
-      <div class="stat-card"><div class="stat-icon">🗄️</div><div class="stat-label">数据源总数</div><div class="stat-value">${State.datasourceList.length}</div></div>
-      <div class="stat-card"><div class="stat-icon">🔧</div><div class="stat-label">类型数</div><div class="stat-value">${new Set(State.datasourceList.map(d => d.db_type)).size}</div></div>
+      <div class="stat-card"><div class="stat-icon">🗄️</div><div class="stat-label">数据源总数</div><div class="stat-value">${pageInfo.total || items.length}</div></div>
+      <div class="stat-card"><div class="stat-icon">🔧</div><div class="stat-label">当前页</div><div class="stat-value">${_dsListPage}/${totalPages || 1}</div></div>
     </div>`;
     html += `<div class="card"><div class="card-header"><span class="card-title">数据源列表</span></div><div class="card-body">`;
-    if (State.datasourceList.length === 0) {
+    if (items.length === 0) {
       html += `<div class="empty-state"><div class="empty-state-icon">🗄️</div><div class="empty-state-text">暂无数据源，点击"添加数据源"创建</div></div>`;
     } else {
-      html += `<div class="table-wrapper"><table class="data-table"><thead><tr><th>ID</th><th>类型</th><th>名称</th><th>主机</th><th>端口</th><th>备注</th><th>操作</th></tr></thead><tbody>`;
-      State.datasourceList.forEach(ds => {
-        html += `<tr><td>${ds.id}</td><td><span class="tag tag-blue">${escapeHtml(ds.db_type)}</span></td><td><strong>${escapeHtml(ds.db_name)}</strong></td><td>${escapeHtml(ds.db_host || "-")}</td><td>${ds.db_port || "-"}</td><td>${escapeHtml(ds.comment || "-")}</td><td><button class="btn btn-sm" onclick="testConnection(${ds.id})">测试</button> <button class="btn btn-sm" onclick="showSchemaModal(${ds.id})">编辑注释</button> <button class="btn btn-sm btn-danger" onclick="deleteDatasource(${ds.id})">删除</button></td></tr>`;
+      html += `<div class="table-wrapper"><table class="data-table"><thead><tr><th>名称</th><th>类型</th><th>连接地址</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>`;
+      items.forEach(ds => {
+        const typeLabel = ds.dbType === 0 ? "MySQL" : (ds.dbType === 4 ? "Neo4j" : (ds.dbType === 5 ? "悦数" : "未知"));
+        html += `<tr>
+          <td><strong>${escapeHtml(ds.dbName || ds.name || "-")}</strong></td>
+          <td><span class="tag tag-blue">${typeLabel}</span></td>
+          <td>${escapeHtml(ds.ip || "-")}:${ds.port || "-"}</td>
+          <td>${escapeHtml(ds.description || "-")}</td>
+          <td>${escapeHtml(ds.createTime || "-")}</td>
+          <td>
+            <button class="btn btn-sm" onclick="testDsConnection(${ds.id})">测试</button>
+            <button class="btn btn-sm" onclick="editDatasource(${ds.id})">编辑</button>
+            <button class="btn btn-sm" onclick="showSchemaModal(${ds.id})">注释</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteDatasource(${ds.id})">删除</button>
+          </td>
+        </tr>`;
       });
       html += `</tbody></table></div>`;
+      // 分页
+      if (totalPages > 1) {
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">`;
+        html += `<span style="font-size:12px;color:var(--text-tertiary)">共 ${pageInfo.total || items.length} 条</span>`;
+        html += `<div style="display:flex;gap:4px">`;
+        html += `<button class="btn btn-sm" ${_dsListPage <= 1 ? "disabled" : ""} onclick="loadDatasources(${_dsListPage - 1})">&lt; 上一页</button>`;
+        html += `<span style="padding:4px 8px;font-size:13px">${_dsListPage} / ${totalPages}</span>`;
+        html += `<button class="btn btn-sm" ${_dsListPage >= totalPages ? "disabled" : ""} onclick="loadDatasources(${_dsListPage + 1})">下一页 &gt;</button>`;
+        html += `</div></div>`;
+      }
     }
     html += `</div></div>`;
     container.innerHTML = html;
@@ -1349,27 +1385,159 @@ async function loadDatasources() {
   }
 }
 
-async function testConnection(id) {
+function searchDatasources(val) {
+  _dsListSearch = val;
+  _dsListPage = 1;
+  loadDatasources();
+}
+
+async function testDsConnection(id) {
   toast("正在测试连接...", "info");
   try {
-    const ds = State.datasourceList.find(d => d.id == id);
-    const result = await api("POST", "/datasources/test-connection", {
-      db_type: ds.db_type, db_name: ds.db_name, db_host: ds.db_host,
-      db_port: ds.db_port, db_user: ds.db_user, db_path: ds.db_path || "",
-      db_pwd: "", datasource_id: String(ds.id),
-    });
-    toast(result.connected ? "连接成功" : "连接失败", result.connected ? "success" : "error");
+    const resp = await api("POST", "/knowledge/llm/userDataSource/testConnection/v1", { id });
+    if (resp.success) {
+      toast("连接成功", "success");
+    } else {
+      toast("连接失败: " + (resp.msg || "未知错误"), "error");
+    }
   } catch (e) { toast("测试失败: " + e.message, "error"); }
 }
 
 async function deleteDatasource(id) {
   if (!confirm("确认删除此数据源？")) return;
-  try { await api("DELETE", `/datasources/${id}`); toast("已删除", "success"); loadDatasources(); }
-  catch (e) { toast("删除失败: " + e.message, "error"); }
+  try {
+    await api("POST", "/knowledge/llm/userDataSource/delete/v1", { id, isDeleted: 1 });
+    toast("已删除", "success");
+    await loadDatasources();
+  } catch (e) { toast("删除失败: " + e.message, "error"); }
+}
+
+function showAddDsModal() {
+  openModal("添加数据源", `
+    <div class="form-field"><label>数据库类型</label><select class="select" id="ds-type" onchange="toggleDsFields()">
+      <option value="0">MySQL</option>
+      <option value="4">Neo4j</option>
+      <option value="5">悦数</option>
+    </select></div>
+    <div class="form-field"><label>数据库名称 (name) *</label><input class="input" id="ds-name" placeholder="如 agent_test 或 chase_tv"></div>
+    <div class="form-field"><label>数据源显示名称 (dbName)</label><input class="input" id="ds-dbname" placeholder="如 测试_智能问数"></div>
+    <div id="ds-mysql-fields">
+      <div class="form-field"><label>主机地址</label><input class="input" id="ds-host" placeholder="如 10.12.61.23" value="10.12.61.23"></div>
+      <div class="form-row">
+        <div class="form-field form-field-half"><label>端口</label><input class="input" id="ds-port" type="number" placeholder="如 3299" value="3299"></div>
+        <div class="form-field form-field-half"><label>用户名</label><input class="input" id="ds-user" placeholder="如 root1" value="root1"></div>
+      </div>
+      <div class="form-field"><label>密码</label><input class="input" id="ds-pwd" type="password" placeholder="明文密码"></div>
+    </div>
+    <div id="ds-sqlite-fields" style="display:none">
+      <div class="form-field"><label>文件路径</label><input class="input" id="ds-path" placeholder="如 /app/pilot/examples/example.db"></div>
+    </div>
+    <div class="form-field"><label>备注说明</label><input class="input" id="ds-comment" placeholder="可选，如：双11电商数据"></div>
+  `, [
+    { text: "取消", class: "btn", action: "closeModalDirect()" },
+    { text: "测试连接", class: "btn", action: "testConnectionFromModal()" },
+    { text: "创建", class: "btn btn-primary", action: "createDatasource()" },
+  ]);
+}
+
+function toggleDsFields() {
+  const type = document.getElementById("ds-type").value;
+  document.getElementById("ds-mysql-fields").style.display = type === "0" ? "" : "none";
+  document.getElementById("ds-sqlite-fields").style.display = type === "5" ? "" : "none";
+}
+
+function _getDsFormParams() {
+  const dbType = parseInt(document.getElementById("ds-type").value) || 0;
+  return {
+    dbType,
+    name: document.getElementById("ds-name").value,
+    dbName: document.getElementById("ds-dbname") ? document.getElementById("ds-dbname").value : "",
+    ip: document.getElementById("ds-host") ? document.getElementById("ds-host").value : "",
+    port: document.getElementById("ds-port") ? parseInt(document.getElementById("ds-port").value) || 0 : 0,
+    username: document.getElementById("ds-user") ? document.getElementById("ds-user").value : "",
+    password: document.getElementById("ds-pwd") ? document.getElementById("ds-pwd").value : "",
+    dbSchema: "",
+    description: document.getElementById("ds-comment") ? document.getElementById("ds-comment").value : "",
+  };
+}
+
+async function testConnectionFromModal() {
+  const body = _getDsFormParams();
+  if (!body.name) { toast("数据库名称不能为空", "error"); return; }
+  toast("正在测试连接...", "info");
+  try {
+    const resp = await api("POST", "/knowledge/llm/userDataSource/testConnection/v1", body);
+    if (resp.success) {
+      toast("连接成功", "success");
+    } else {
+      toast("连接失败: " + (resp.msg || "未知错误"), "error");
+    }
+  } catch (e) { toast("测试失败: " + e.message, "error"); }
+}
+
+async function createDatasource() {
+  const body = _getDsFormParams();
+  if (!body.name) { toast("数据库名称不能为空", "error"); return; }
+  try {
+    const resp = await api("POST", "/knowledge/llm/userDataSource/upsert/v1", body);
+    if (resp.success) {
+      toast("数据源创建成功", "success");
+      closeModalDirect();
+      await loadDatasources();
+    } else {
+      toast("创建失败: " + (resp.msg || "未知错误"), "error");
+    }
+  } catch (e) { toast("创建失败: " + e.message, "error"); }
+}
+
+async function editDatasource(id) {
+  // 从已加载数据源列表中找到详情
+  const ds = State.datasourceList.find(d => d.id === id);
+  if (!ds) { toast("数据源不存在，请刷新列表", "error"); return; }
+
+  openModal(`编辑数据源 — ${escapeHtml(ds.dbName || ds.name || "")}`, `
+    <div class="form-field" style="display:none"><label>数据库类型</label><select class="select" id="ds-type" onchange="toggleDsFields()">
+      <option value="0" ${ds.dbType === 0 ? "selected" : ""}>MySQL</option>
+      <option value="4" ${ds.dbType === 4 ? "selected" : ""}>Neo4j</option>
+      <option value="5" ${ds.dbType === 5 ? "selected" : ""}>悦数</option>
+    </select></div>
+    <div class="form-field"><label>数据库名称 (name)</label><input class="input" id="ds-name" value="${escapeAttr(ds.name || "")}"></div>
+    <div class="form-field"><label>数据源显示名称 (dbName)</label><input class="input" id="ds-dbname" value="${escapeAttr(ds.dbName || "")}"></div>
+    <div id="ds-mysql-fields">
+      <div class="form-field"><label>主机地址</label><input class="input" id="ds-host" value="${escapeAttr(ds.ip || "")}"></div>
+      <div class="form-row">
+        <div class="form-field form-field-half"><label>端口</label><input class="input" id="ds-port" type="number" value="${ds.port || 3306}"></div>
+        <div class="form-field form-field-half"><label>用户名</label><input class="input" id="ds-user" value="${escapeAttr(ds.username || "")}"></div>
+      </div>
+      <div class="form-field"><label>密码</label><input class="input" id="ds-pwd" type="password" placeholder="留空不修改"></div>
+    </div>
+    <div class="form-field"><label>备注说明</label><input class="input" id="ds-comment" value="${escapeAttr(ds.description || "")}"></div>
+  `, [
+    { text: "取消", class: "btn", action: "closeModalDirect()" },
+    { text: "测试连接", class: "btn", action: "testConnectionFromModal()" },
+    { text: "保存", class: "btn btn-primary", action: `saveDatasource(${id})` },
+  ]);
+}
+
+async function saveDatasource(id) {
+  const body = _getDsFormParams();
+  if (!body.name) { toast("数据库名称不能为空", "error"); return; }
+  if (!body.password) { toast("请输入密码（编辑需重新输入）", "error"); return; }
+  body.id = id;
+  try {
+    const resp = await api("POST", "/knowledge/llm/userDataSource/upsert/v1", body);
+    if (resp.success) {
+      toast("保存成功", "success");
+      closeModalDirect();
+      await loadDatasources();
+    } else {
+      toast("保存失败: " + (resp.msg || "未知错误"), "error");
+    }
+  } catch (e) { toast("保存失败: " + e.message, "error"); }
 }
 
 // ==========================================================================
-// Schema & Comment 编辑（表注释 + 列注释）
+// Schema & Comment 编辑（表注释 + 列注释）— 保留本地接口
 // ==========================================================================
 let _schemaData = null;  // 当前编辑的 schema 数据
 
@@ -1537,179 +1705,6 @@ async function saveSchemaComments(dsId) {
 }
 
 function escapeAttr(text) { return String(text || "").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
-
-function showAddDsModal() {
-  openModal("添加数据源", `
-    <div class="form-field"><label>数据库类型</label><select class="select" id="ds-type" onchange="toggleDsFields()"><option value="mysql">MySQL</option><option value="sqlite">SQLite</option><option value="duckdb">DuckDB</option><option value="postgresql">PostgreSQL</option></select></div>
-    <div class="form-field"><label>数据库名 *</label><input class="input" id="ds-name" placeholder="如 chase_book"></div>
-    <div id="ds-mysql-fields">
-      <div class="form-field"><label>主机地址</label><input class="input" id="ds-host" placeholder="如 127.0.0.1" value="127.0.0.1"></div>
-      <div class="form-row">
-        <div class="form-field form-field-half"><label>端口</label><input class="input" id="ds-port" type="number" placeholder="如 3306" value="3306"></div>
-        <div class="form-field form-field-half"><label>用户名</label><input class="input" id="ds-user" placeholder="如 root" value="root"></div>
-      </div>
-      <div class="form-field"><label>密码</label><input class="input" id="ds-pwd" type="password"></div>
-    </div>
-    <div id="ds-sqlite-fields" style="display:none">
-      <div class="form-field"><label>文件路径</label><input class="input" id="ds-path" placeholder="如 /app/pilot/examples/example.db"></div>
-    </div>
-    <div class="form-field"><label>数据库备注</label><input class="input" id="ds-comment" placeholder="可选，如：双11电商数据"></div>
-    <div class="form-hint">💡 测试连接成功后，可在下方为表和列添加中文注释（仅 MySQL）</div>
-    <div id="ds-schema-area" style="display:none;margin-top:12px">
-      <div style="border-top:1px solid var(--border-color);padding-top:12px">
-        <div style="font-weight:600;font-size:13px;margin-bottom:8px">📋 表/列注释编辑</div>
-        <div id="ds-schema-list"></div>
-      </div>
-    </div>
-  `, [
-    { text: "取消", class: "btn", action: "closeModalDirect()" },
-    { text: "测试连接", class: "btn", action: "testConnectionFromModal()" },
-    { text: "创建", class: "btn btn-primary", action: "createDatasource()" },
-  ]);
-}
-
-function toggleDsFields() {
-  const type = document.getElementById("ds-type").value;
-  document.getElementById("ds-mysql-fields").style.display = type === "sqlite" ? "none" : "";
-  document.getElementById("ds-sqlite-fields").style.display = type === "sqlite" ? "" : "none";
-}
-
-function _getDsFormParams() {
-  const type = document.getElementById("ds-type").value;
-  return {
-    db_type: type,
-    db_name: document.getElementById("ds-name").value,
-    db_host: document.getElementById("ds-host") ? document.getElementById("ds-host").value : "",
-    db_port: document.getElementById("ds-port") ? parseInt(document.getElementById("ds-port").value) || 0 : 0,
-    db_user: document.getElementById("ds-user") ? document.getElementById("ds-user").value : "",
-    db_pwd: document.getElementById("ds-pwd") ? document.getElementById("ds-pwd").value : "",
-    db_path: document.getElementById("ds-path") ? document.getElementById("ds-path").value : "",
-  };
-}
-
-async function testConnectionFromModal() {
-  const body = _getDsFormParams();
-  if (!body.db_name) { toast("数据库名不能为空", "error"); return; }
-  toast("正在测试连接...", "info");
-  try {
-    const result = await api("POST", "/datasources/test-connection", body);
-    if (result.connected) {
-      toast("连接成功", "success");
-      // 连接成功后预览 schema（仅 MySQL）
-      if (body.db_type === "mysql") {
-        await _loadSchemaPreview(body);
-      }
-    } else {
-      toast("连接失败", "error");
-    }
-  } catch (e) { toast("测试失败: " + e.message, "error"); }
-}
-
-async function _loadSchemaPreview(body) {
-  try {
-    const data = await api("POST", "/datasources/schema-preview", body);
-    _schemaData = data.schema;
-    document.getElementById("ds-schema-area").style.display = "";
-    _renderAddDsSchemaEditor(data.schema);
-  } catch (e) {
-    document.getElementById("ds-schema-area").style.display = "none";
-    toast("预览表结构失败: " + e.message, "info");
-  }
-}
-
-function _renderAddDsSchemaEditor(schema) {
-  let html = "";
-  schema.tables.forEach((table, ti) => {
-    html += `<div class="schema-table-card">`;
-    html += `<div class="schema-table-header" onclick="toggleSchemaTable('add-${ti}')">
-      <span class="schema-table-name">📋 ${escapeHtml(table.table_name)}</span>
-      <span class="schema-table-cols">${table.columns.length} 列</span>
-      <span class="react-step-toggle"><i class="fa-solid fa-chevron-down"></i></span>
-    </div>`;
-    html += `<div class="schema-table-body" id="schema-table-add-${ti}">`;
-    html += `<div class="schema-field-row">
-      <label class="schema-label">表注释</label>
-      <input class="input schema-table-comment" data-table-idx="${ti}" value="${escapeAttr(table.table_comment || "")}" placeholder="输入表注释...">
-    </div>`;
-    html += `<div class="table-wrapper"><table class="data-table schema-col-table">
-      <thead><tr><th>列名</th><th>类型</th><th>主键</th><th>注释</th></tr></thead><tbody>`;
-    table.columns.forEach((col, ci) => {
-      const pkBadge = col.is_primary_key ? '<span class="tag tag-green">PK</span>' : '<span style="color:var(--text-tertiary)">-</span>';
-      html += `<tr>
-        <td><code>${escapeHtml(col.name)}</code></td>
-        <td>${escapeHtml(col.type)}</td>
-        <td style="text-align:center">${pkBadge}</td>
-        <td><input class="input schema-col-comment" data-table-idx="${ti}" data-col-idx="${ci}"
-          value="${escapeAttr(col.comment || "")}" placeholder="输入列注释..."></td>
-      </tr>`;
-    });
-    html += `</tbody></table></div>`;
-    html += `</div></div>`;
-  });
-  document.getElementById("ds-schema-list").innerHTML = html;
-}
-
-async function createDatasource() {
-  const body = _getDsFormParams();
-  body.comment = document.getElementById("ds-comment").value;
-  if (!body.db_name) { toast("数据库名不能为空", "error"); return; }
-  try {
-    // 1. 创建数据源
-    await api("POST", "/datasources", body);
-    toast("数据源创建成功", "success");
-
-    // 2. 如果有 schema 编辑数据（MySQL），找到新数据源并保存注释
-    if (_schemaData && _schemaData.db_type === "mysql") {
-      // 刷新列表获取新数据源 ID
-      await loadDatasources();
-      const newDs = State.datasourceList.find(d => d.db_name === body.db_name);
-      if (newDs) {
-        await _saveSchemaCommentsFromModal(newDs.id);
-      }
-    }
-    closeModalDirect();
-    await loadDatasources();
-  } catch (e) { toast("创建失败: " + e.message, "error"); }
-}
-
-async function _saveSchemaCommentsFromModal(dsId) {
-  if (!_schemaData) return;
-  const tableComments = [];
-  const columnComments = [];
-
-  _schemaData.tables.forEach((table, ti) => {
-    const tableInput = document.querySelector(`#ds-schema-list .schema-table-comment[data-table-idx="${ti}"]`);
-    if (tableInput) {
-      const newComment = tableInput.value;
-      if (newComment !== (table.table_comment || "")) {
-        tableComments.push({ table_name: table.table_name, comment: newComment });
-      }
-    }
-    table.columns.forEach((col, ci) => {
-      const colInput = document.querySelector(`#ds-schema-list .schema-col-comment[data-table-idx="${ti}"][data-col-idx="${ci}"]`);
-      if (colInput) {
-        const newComment = colInput.value;
-        if (newComment !== (col.comment || "")) {
-          columnComments.push({ table_name: table.table_name, column_name: col.name, comment: newComment });
-        }
-      }
-    });
-  });
-
-  const total = tableComments.length + columnComments.length;
-  if (total === 0) return;
-  try {
-    if (tableComments.length > 0) {
-      await api("PUT", `/datasources/${dsId}/schema/tables`, { comments: tableComments });
-    }
-    if (columnComments.length > 0) {
-      await api("PUT", `/datasources/${dsId}/schema/columns`, { comments: columnComments });
-    }
-    toast(`已保存 ${total} 项注释`, "success");
-  } catch (e) {
-    toast("注释保存失败: " + e.message, "info");
-  }
-}
 
 // ==========================================================================
 // 知识库管理

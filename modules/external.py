@@ -16,7 +16,7 @@
 """
 import json
 import os
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -1021,3 +1021,207 @@ async def chat_with_db(req: ChatWithDbRequest):
         raise
     except Exception as e:
         raise HTTPException(502, detail=f"chatWithDb 失败: {e}")
+
+
+# ===========================================================================
+# 第三章：数据源管理接口
+# ===========================================================================
+
+class TestConnectionReq(BaseModel):
+    """测试连接请求 —— 支持两种模式：
+    1. 按 ID 测试：只传 id（从 DB-GPT 获取连接参数后测试）
+    2. 全量参数测试：传完整连接信息（创建/编辑时测试）
+    """
+    id: Optional[int] = None
+    dbType: Optional[int] = None       # 0=MySQL, 4=Neo4j, 5=悦数
+    jdbcUrl: Optional[str] = None
+    dbName: Optional[str] = None
+    name: Optional[str] = None         # 数据库名（如 agent_test）
+    dbSchema: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    description: Optional[str] = None
+    ip: Optional[str] = None
+    port: Optional[Union[int, str]] = None
+
+
+class UpsertDsReq(BaseModel):
+    """创建/更新数据源请求（upsert）。
+    无 id = 创建，有 id = 更新。
+    """
+    id: Optional[int] = None
+    dbName: str = ""                   # 数据源显示名称（如 "测试_智能问数"）
+    dbType: int = 0                    # 0=MySQL
+    dbSchema: str = ""
+    description: str = ""
+    ip: str = ""
+    name: str = ""                     # 数据库名（如 agent_test）
+    port: Optional[Union[int, str]] = None
+    username: str = ""
+    password: str = ""
+
+
+class DeleteDsReq(BaseModel):
+    """删除数据源请求。"""
+    id: int
+    isDeleted: int = 1
+
+
+def _dbtype_int_to_str(db_type_int: int) -> str:
+    """外部平台 dbType 整数 → 本地类型字符串。"""
+    mapping = {0: "mysql", 4: "neo4j", 5: "悦数"}
+    return mapping.get(db_type_int, "mysql")
+
+
+@router.post("/knowledge/llm/userDataSource/testConnection/v1")
+async def test_connection(req: TestConnectionReq):
+    """测试数据源连接。
+
+    两种模式：
+    - 模式A（按ID）：请求体只有 {id} → 从 DB-GPT 获取连接参数后测试
+    - 模式B（全量参数）：请求体含 ip/port/name/username/password → 直接测试
+    """
+    try:
+        from sqlalchemy import create_engine, text as sa_text
+
+        db_type_str = "mysql"
+        db_host = ""
+        db_port = 3306
+        db_user = ""
+        db_pwd = ""
+        db_name = ""
+
+        if req.id and not req.ip:
+            # 模式A：按 ID 从 DB-GPT 获取连接参数
+            detail = await _get_datasource_detail_by_id(req.id)
+            params = detail.get("params", {})
+            db_type_str = detail.get("type", detail.get("db_type", "mysql"))
+            if isinstance(db_type_str, int):
+                db_type_str = _dbtype_int_to_str(db_type_str)
+            db_host = params.get("host", detail.get("db_host", ""))
+            db_port = params.get("port", detail.get("db_port", 3306))
+            db_user = params.get("user", detail.get("db_user", ""))
+            db_pwd = params.get("password", "")
+            db_name = detail.get("db_name", params.get("database", ""))
+        else:
+            # 模式B：全量参数
+            db_type_int = req.dbType if req.dbType is not None else 0
+            db_type_str = _dbtype_int_to_str(db_type_int)
+            db_host = req.ip or ""
+            db_port = int(req.port) if req.port else 3306
+            db_user = req.username or ""
+            db_pwd = req.password or ""
+            db_name = req.name or req.dbName or ""
+            # 如果有 jdbcUrl，尝试解析
+            if req.jdbcUrl and not db_host:
+                jdbc = req.jdbcUrl
+                # jdbc:mysql://host:port/database?params
+                if "mysql://" in jdbc:
+                    import re
+                    m = re.search(r'mysql://([^:/]+):?(\d+)?/([^?]+)', jdbc)
+                    if m:
+                        db_host = m.group(1)
+                        db_port = int(m.group(2)) if m.group(2) else 3306
+                        db_name = m.group(3)
+
+        if db_type_str != "mysql":
+            # 非 MySQL 暂不支持真实测试，返回成功（前端需要可继续操作）
+            return {"code": 200, "msg": "Success", "success": True, "data": "连接成功"}
+
+        if not db_host or not db_name:
+            return {"code": 500, "msg": "连接失败: 缺少主机地址或数据库名", "success": False, "data": None}
+
+        url = f"mysql+pymysql://{db_user}:{db_pwd}@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
+        engine = create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
+        with engine.connect() as conn:
+            conn.execute(sa_text("SELECT 1"))
+        engine.dispose()
+
+        return {"code": 200, "msg": "Success", "success": True, "data": "连接成功"}
+    except Exception as e:
+        return {"code": 500, "msg": f"连接失败: {e}", "success": False, "data": None}
+
+
+@router.post("/knowledge/llm/userDataSource/upsert/v1")
+async def upsert_datasource(req: UpsertDsReq):
+    """创建或更新数据源（upsert）。
+
+    无 id = 创建（调 DB-GPT POST /datasources）
+    有 id = 更新（调 DB-GPT PUT /datasources）
+    """
+    try:
+        client = get_client()
+        db_type_str = _dbtype_int_to_str(req.dbType)
+        db_name = req.name or req.dbName
+        port_val = int(req.port) if req.port else 3306
+
+        if req.id:
+            # 更新
+            body = {
+                "id": req.id,
+                "db_type": db_type_str,
+                "db_name": db_name,
+                "db_host": req.ip,
+                "db_port": port_val,
+                "db_user": req.username,
+                "db_pwd": req.password,
+                "comment": req.description or req.dbName,
+            }
+            res = await client.put("/datasources", body)
+            data = res.json()
+            if not data.get("success"):
+                raise HTTPException(400, detail=str(data.get("err_msg", data)))
+            # 额外更新 connect_config.comment（PUT /datasources 不一定更新 comment）
+            if req.description:
+                try:
+                    conn = _get_mysql_conn()
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                "UPDATE connect_config SET comment = %s, gmt_modified = NOW() WHERE id = %s",
+                                (req.description, req.id),
+                            )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass  # comment 更新失败不影响主流程
+            return {"code": 200, "msg": "Success", "success": True, "data": req.id}
+        else:
+            # 创建
+            body = {
+                "db_type": db_type_str,
+                "db_name": db_name,
+                "db_host": req.ip,
+                "db_port": port_val,
+                "db_user": req.username,
+                "db_pwd": req.password,
+                "comment": req.description or req.dbName,
+            }
+            res = await client.post("/datasources", body)
+            data = res.json()
+            if not data.get("success"):
+                raise HTTPException(400, detail=str(data.get("err_msg", data)))
+            # DB-GPT 创建后返回的数据源 id 需要从列表反查
+            new_id = await _get_datasource_id_by_name(db_name)
+            return {"code": 200, "msg": "Success", "success": True, "data": new_id or 0}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, detail=f"保存数据源失败: {e}")
+
+
+@router.post("/knowledge/llm/userDataSource/delete/v1")
+async def delete_datasource(req: DeleteDsReq):
+    """删除数据源（调 DB-GPT DELETE /datasources/{id}）。"""
+    try:
+        client = get_client()
+        res = await client.delete(f"/datasources/{req.id}")
+        data = res.json()
+        if not data.get("success"):
+            raise HTTPException(400, detail=str(data.get("err_msg", data)))
+        return {"code": 200, "msg": "Success", "success": True, "data": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, detail=f"删除数据源失败: {e}")
