@@ -686,7 +686,7 @@ table.data-table tr:hover td { background: var(--bg-hover); }
 .select-ds-modal .select-ds-selected-count strong { color: var(--accent); }
 
 /* 数据源编辑页面（双栏布局） */
-.ds-edit-page { position: fixed; inset: 0; z-index: 2000; background: var(--bg-primary); display: flex; flex-direction: column; overflow: hidden; }
+.ds-edit-page { position: fixed; inset: 0; z-index: 2200; background: var(--bg-primary); display: flex; flex-direction: column; overflow: hidden; }
 .ds-edit-page .ds-edit-header { display: flex; align-items: center; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--border-color); background: var(--bg-secondary); flex-shrink: 0; }
 .ds-edit-page .ds-edit-back { background: none; border: none; color: var(--text-primary); font-size: 20px; cursor: pointer; padding: 4px; border-radius: 4px; }
 .ds-edit-page .ds-edit-back:hover { background: var(--bg-hover); }
