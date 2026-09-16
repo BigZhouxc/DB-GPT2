@@ -2922,6 +2922,297 @@ curl -X POST http://localhost:8080/api/v1/agent/insert \
 
 ---
 
+### 11.4 获取应用配置详情（agent/detail）
+
+**请求方式**：`POST`
+
+**请求地址**：`/knowledge/api/v1/agent/detail`
+
+**参照外部平台**：`POST /knowledge/api/v1/agent/detail`（AgentDetailRequest）
+
+**功能说明**：根据 app_code 返回应用完整配置信息（AgentDetailVO 格式），含数据源绑定、模型配置、开场白、引导问题等。
+
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | string | 是 | app_code（UUID） |
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8080/knowledge/api/v1/agent/detail \
+  -H "Content-Type: application/json" \
+  -d '{"id": "59359968-b1bb-11f1-a35d-0242ac160002"}'
+```
+
+**正常响应示例**：
+```json
+{
+    "code": 200,
+    "msg": "Success",
+    "success": true,
+    "data": {
+        "id": "59359968-...",
+        "appId": "59359968-...",
+        "appName": "测试应用",
+        "remark": "描述",
+        "openingMessage": "你好",
+        "guideQuestions": ["问题1", "问题2"],
+        "type": 2,
+        "limited": 0,
+        "managementMode": 3,
+        "sessionType": 10,
+        "source": 0,
+        "visible": 1,
+        "enableSuggestedQuestions": 1,
+        "varMap": {
+            "modelConfig": {
+                "modelType": "TS/GLM-5.2",
+                "temperature": 0.7,
+                "maxTokens": 4000,
+                "topP": 1.0,
+                "frequencyPenalty": 0.0,
+                "presencePenalty": 0.0,
+                "enableThinking": false,
+                "historyRounds": 3,
+                "baseModel": "openai"
+            },
+            "dataSourceConfigs": [
+                {"databaseId": 24, "dbName": "chase_book", "tableNames": ["图书"]}
+            ],
+            "knowledgeGraphConfigs": []
+        }
+    }
+}
+```
+
+---
+
+### 11.5 批量查数据源（dbNamesByIds）
+
+**请求方式**：`POST`
+
+**请求地址**：`/knowledge/llm/userDataSource/get/dbNamesByIds/v1`
+
+**参照外部平台**：`POST /knowledge/llm/userDataSource/get/dbNamesByIds/v1`
+
+**功能说明**：根据数据源 ID 列表返回数据源简要信息。
+
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| ids | array\<int\> | 是 | 数据源 ID 列表 |
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8080/knowledge/llm/userDataSource/get/dbNamesByIds/v1 \
+  -H "Content-Type: application/json" \
+  -d '{"ids": [24]}'
+```
+
+**正常响应示例**：
+```json
+{
+    "code": 200,
+    "msg": "Success",
+    "success": true,
+    "data": [
+        {"id": 24, "dbName": "chase_book", "name": "chase_book", "ip": "db-gpt-db-1", "port": 3306}
+    ]
+}
+```
+
+---
+
+### 11.6 获取数据表列表（getTablesFromDataSource）
+
+**请求方式**：`POST`
+
+**请求地址**：`/knowledge/llm/userDataSource/getTablesFromDataSource/v1`
+
+**参照外部平台**：`POST /knowledge/llm/userDataSource/getTablesFromDataSource/v1`
+
+**功能说明**：获取指定数据源的所有表名 + 表注释。
+
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | int | 是 | 数据源 ID |
+| tableNames | array\<string\> | 否 | 表名过滤（空=全部） |
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8080/knowledge/llm/userDataSource/getTablesFromDataSource/v1 \
+  -H "Content-Type: application/json" \
+  -d '{"id": 24, "tableNames": []}'
+```
+
+**正常响应示例**：
+```json
+{
+    "code": 200,
+    "msg": "Success",
+    "success": true,
+    "data": [
+        {"tableName": "图书", "comment": ""},
+        {"tableName": "平台", "comment": ""}
+    ]
+}
+```
+
+---
+
+### 11.7 获取表列信息（table/getComments）
+
+**请求方式**：`POST`
+
+**请求地址**：`/knowledge/llm/userDataSource/table/getComments/v1`
+
+**参照外部平台**：`POST /knowledge/llm/userDataSource/table/getComments/v1`
+
+**功能说明**：获取指定数据源中指定表的列信息。
+
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | int | 是 | 数据源 ID |
+| tableName | string | 是 | 表名 |
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8080/knowledge/llm/userDataSource/table/getComments/v1 \
+  -H "Content-Type: application/json" \
+  -d '{"id": 24, "tableName": "图书"}'
+```
+
+**正常响应示例**：
+```json
+{
+    "code": 200,
+    "msg": "Success",
+    "success": true,
+    "data": [
+        {
+            "columnName": "图书id",
+            "dataType": "VARCHAR(255)",
+            "maxLength": null,
+            "isNullable": "NO",
+            "defaultValue": null,
+            "comment": "图书ID",
+            "columnChName": null,
+            "enumMap": null,
+            "reverseEnumMap": {}
+        }
+    ]
+}
+```
+
+---
+
+### 11.8 修改表+列注释（table/updateTableComments）
+
+**请求方式**：`POST`
+
+**请求地址**：`/knowledge/llm/userDataSource/table/updateTableComments/v1`
+
+**参照外部平台**：`POST /knowledge/llm/userDataSource/table/updateTableComments/v1`
+
+**功能说明**：修改表注释 + 列注释（ALTER TABLE ... COMMENT + MODIFY COLUMN ... COMMENT）。
+
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | int | 是 | 数据源 ID |
+| tableName | string | 是 | 表名 |
+| tableComment | string | 否 | 表注释 |
+| tableColumnInfos | array\<object\> | 否 | 列信息列表，每项含 columnName/comment/dataType |
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8080/knowledge/llm/userDataSource/table/updateTableComments/v1 \
+  -H "Content-Type: application/json" \
+  -d '{"id": 24, "tableName": "图书", "tableComment": "图书表", "tableColumnInfos": [{"columnName": "图书id", "comment": "图书ID", "dataType": "varchar"}]}'
+```
+
+**正常响应示例**：
+```json
+{
+    "code": 200,
+    "msg": "Success",
+    "success": true,
+    "data": "更新成功"
+}
+```
+
+---
+
+### 11.9 编辑保存智能体（agent/update）
+
+**请求方式**：`POST`
+
+**请求地址**：`/knowledge/api/v1/agent/update`
+
+**参照外部平台**：`POST /knowledge/api/v1/agent/update`（AgentUpdateRequest）
+
+**功能说明**：编辑保存智能体配置，含开场白、引导问题、模型配置、数据源+选表。
+
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | string | 是 | app_code |
+| appName | string | 否 | 应用名称 |
+| remark | string | 否 | 描述 |
+| openingMessage | string | 否 | 开场白 |
+| guideQuestions | array\<string\> | 否 | 引导问题列表 |
+| settingDescription | string | 否 | 设定描述/提示词 |
+| varMap | object | 否 | 含 modelConfig + dataSourceConfigs |
+| varMap.modelConfig | object | 否 | 模型配置（modelType/temperature/maxTokens/topP/...） |
+| varMap.dataSourceConfigs | array | 否 | 数据源配置（databaseId/dbName/tableNames） |
+| type | int | 否 | 智能体大类（冗余，默认2） |
+| limited | int | 否 | 是否限流（冗余，默认0） |
+| managementMode | int | 否 | 管理方式（冗余，默认3） |
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8080/knowledge/api/v1/agent/update \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "59359968-...",
+    "appName": "测试应用",
+    "remark": "描述",
+    "openingMessage": "你好",
+    "guideQuestions": ["问题1"],
+    "varMap": {
+      "modelConfig": {"modelType": "TS/GLM-5.2", "temperature": 0.7, "maxTokens": 4000, "topP": 1.0},
+      "dataSourceConfigs": [{"databaseId": 24, "dbName": "chase_book", "tableNames": ["图书"]}]
+    },
+    "type": 2, "limited": 0, "managementMode": 3
+  }'
+```
+
+**正常响应示例**：
+```json
+{
+    "code": 200,
+    "msg": "Success",
+    "success": true,
+    "data": true
+}
+```
+
+**处理流程**：
+1. 调 DB-GPT `/app/edit` 更新应用（resources + model + temperature + max_new_tokens）
+2. 修复 `published` 为 `true`（DB-GPT edit 后默认 false，会导致 detail 查询失败）
+3. 写辅助表 `app_extra_config`（opening_message / guide_questions / model_config_extra / temperature / max_new_tokens）
+4. 同步写 `recommend_question` 表（user_code 与 gpts_app 一致，params 设为 `{}` 避免 DB-GPT detail 查询 JSON 解析错误）
+
+---
+
 ## 12. 评估管理
 
 ### 11.1 运行评估
@@ -3046,7 +3337,7 @@ curl -X POST http://localhost:8080/evaluation/run \
 | AWEL Flow | 5 | `/flows` | |
 | Prompt | 5 | `/prompts` | |
 | App | 2 | `/apps` | |
-| 外部平台兼容 | 3 | 无 prefix（与外部平台路径一致） | 模型配置/数据源配置/insert智能体 |
+| 外部平台兼容 | 9 | 无 prefix（与外部平台路径一致） | 模型配置/数据源配置/insert/detail/update/dbNamesByIds/getTables/getComments/updateComments |
 | 评估 | 1 | `/evaluation` | |
 | 系统 | 2 | `/` `/health` | |
-| **合计** | **66** | - | 含 2 个 deprecated 旧接口 |
+| **合计** | **72** | - | 含 2 个 deprecated 旧接口 |
