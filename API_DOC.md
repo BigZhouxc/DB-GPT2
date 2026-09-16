@@ -19,7 +19,8 @@
 8. [AWEL Flow 管理](#8-awel-flow-管理)
 9. [Prompt 管理](#9-prompt-管理)
 10. [App 管理](#10-app-管理)
-11. [评估管理](#11-评估管理)
+11. [外部平台兼容接口](#11-外部平台兼容接口)
+12. [评估管理](#12-评估管理)
 
 ---
 
@@ -2674,7 +2675,254 @@ curl http://localhost:8080/apps/app_001
 
 ---
 
-## 11. 评估管理
+## 11. 外部平台兼容接口
+
+> **设计说明**：以下接口的**请求地址**与外部平台（http://10.12.60.26:30541/knowledge Swagger 文档）完全一致，请求/响应格式也保持统一，数据来源为本地 DB-GPT 实例。路由模块为 `modules/external.py`（无 prefix 路由），前端平台可按统一格式无缝调用。
+
+### 11.1 获取模型配置列表
+
+**请求方式**：`POST`
+
+**请求地址**：`/openPlatform/api/v1/model/config/page`
+
+**参照外部平台**：`POST /openPlatform/api/v1/model/config/page`（地址完全一致）
+
+**请求参数**：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| currentPage | int | 否 | 1 | 当前页码 |
+| pageSize | int | 否 | 1000 | 每页条数 |
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8080/openPlatform/api/v1/model/config/page \
+  -H "Content-Type: application/json" \
+  -d '{"currentPage":1,"pageSize":1000}'
+```
+
+**正常响应**（200）：
+```json
+{
+  "code": 200,
+  "msg": "Success",
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "sourceName": "TS",
+      "modelName": "TS/GLM-5.2",
+      "categoryId": 0,
+      "categoryName": null,
+      "baseModelType": 0,
+      "enableThinking": false,
+      "status": 1,
+      "remark": null,
+      "isDeleted": 0,
+      "createTime": null,
+      "updateTime": null,
+      "availableEndpointNum": null,
+      "totalEndpointNum": null
+    }
+  ],
+  "pageInfo": {
+    "currentPage": 1,
+    "pageSize": 1000,
+    "total": 2
+  },
+  "count": 0
+}
+```
+
+**错误响应**（502）：
+```json
+{
+  "detail": "获取模型配置失败: ..."
+}
+```
+
+---
+
+### 11.2 获取数据源配置列表
+
+**请求方式**：`POST`
+
+**请求地址**：`/knowledge/llm/userDataSource/get/page/v1`
+
+**参照外部平台**：`POST /knowledge/llm/userDataSource/get/page/v1`（地址完全一致）
+
+**请求参数**：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| currentPage | int | 否 | 1 | 当前页码 |
+| pageSize | int | 否 | 1000 | 每页条数 |
+| dbName | string | 否 | `""` | 数据库名（过滤） |
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8080/knowledge/llm/userDataSource/get/page/v1 \
+  -H "Content-Type: application/json" \
+  -d '{"currentPage":1,"pageSize":1000,"dbName":""}'
+```
+
+**正常响应**（200）：
+```json
+{
+  "code": 200,
+  "msg": "Success",
+  "success": true,
+  "data": [
+    {
+      "id": 24,
+      "userId": 0,
+      "dbType": 0,
+      "jdbcUrl": "jdbc:mysql://10.12.61.23:3299/chase_book",
+      "dbName": "chase_book",
+      "name": "chase_book",
+      "dbSchema": "",
+      "username": "root1",
+      "password": "",
+      "description": "CHASE 图书数据库",
+      "isDeleted": 0,
+      "createTime": null,
+      "updateTime": null,
+      "ip": "10.12.61.23",
+      "port": 3299
+    }
+  ],
+  "pageInfo": {
+    "currentPage": 1,
+    "pageSize": 1000,
+    "total": 6
+  }
+}
+```
+
+**错误响应**（502）：
+```json
+{
+  "detail": "获取数据源配置失败: ..."
+}
+```
+
+---
+
+### 11.3 创建智能体（insertAgent）
+
+**请求方式**：`POST`
+
+**请求地址**：`/api/v1/agent/insert`
+
+**参照外部平台**：`POST /api/v1/agent/insert`（AgentInsertRequest，地址完全一致）
+
+**设计说明**：接收外部平台 `AgentInsertRequest` 格式的全量参数（冗余参数原样接收后忽略），提取以下子集映射为 DB-GPT App 创建：
+
+| AgentInsertRequest 字段 | 映射到 DB-GPT |
+|-------------------------|---------------|
+| `appName` | app_name（应用名称） |
+| `remark` | app_describe（应用描述） |
+| `modelNames[0]` | model（模型，取第一个） |
+| `guideQuestions` | recommend_questions（推荐问题） |
+| `settingDescription` | prompt_template（自定义提示词） |
+| `varMap.dataSourceConfigs[].dbName` | database_names（数据源列表） |
+| `varMap.dataSourceConfigs[].tableNames` | database_tables（预选表 {库名:[表名]}） |
+
+**请求参数**（AgentInsertRequest）：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| appName | string | 是 | - | 智能体名称 |
+| remark | string | 否 | `""` | 描述 |
+| modelNames | array | 否 | `[]` | 关联的模型名称列表（取第一个使用） |
+| guideQuestions | array | 否 | `[]` | 引导/推荐问题列表 |
+| openingMessage | string | 否 | `""` | 开场白（映射到 app_describe 的备选） |
+| settingDescription | string | 否 | `""` | 设定描述/提示词 |
+| appCategoryId | int | 否 | 0 | 业务分类ID（冗余） |
+| appExtraInfo | string | 否 | `""` | 额外信息（冗余） |
+| enableSuggestedQuestions | int | 否 | 0 | 开启推荐问题（冗余） |
+| errorMessage | string | 否 | `""` | 错误提示（冗余） |
+| frontendPageUrl | string | 否 | `""` | 前端页面URL（冗余） |
+| icon | string | 否 | `""` | 图标（冗余） |
+| interval | int | 否 | 0 | 单位时间数量（冗余） |
+| isDefault | int | 否 | 0 | 是否默认（冗余） |
+| limited | int | 否 | 0 | 是否限流（冗余） |
+| managementMode | int | 否 | 0 | 管理方式（冗余） |
+| permits | int | 否 | 0 | 允许次数（冗余） |
+| sessionType | int | 否 | 0 | 会话类型（冗余） |
+| source | int | 否 | 0 | 来源（冗余） |
+| strategyName | string | 否 | `""` | 策略名称（冗余） |
+| strategyRemark | string | 否 | `""` | 策略备注（冗余） |
+| tokens | int | 否 | 0 | tokens余量（冗余） |
+| type | int | 否 | 1 | 智能体大类（冗余） |
+| unit | string | 否 | `""` | 时间单位（冗余） |
+| userIds | array | 否 | `[]` | 关联用户id（冗余） |
+| varMap | object | 否 | `{}` | 全局变量（含 dataSourceConfigs） |
+| visible | int | 否 | 1 | 是否可见（冗余） |
+| workflowId | string | 否 | `""` | 工作流ID（冗余） |
+| workflowSite | string | 否 | `""` | 工作流站点（冗余） |
+
+**varMap.dataSourceConfigs 子结构**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| dbName | string | 数据库名 |
+| tableNames | array | 预选表名列表 |
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8080/api/v1/agent/insert \
+  -H "Content-Type: application/json" \
+  -d '{
+    "appName": "双11电商分析助手",
+    "remark": "基于chase_double11的电商数据分析",
+    "modelNames": ["TS/GLM-5.2"],
+    "guideQuestions": ["双十一有哪些商家参与活动", "哪个平台影响力最大"],
+    "settingDescription": "",
+    "appCategoryId": 0,
+    "managementMode": 0,
+    "source": 0,
+    "type": 1,
+    "visible": 1,
+    "enableSuggestedQuestions": 0,
+    "isDefault": 0,
+    "limited": 0,
+    "permits": 0,
+    "interval": 0,
+    "unit": "",
+    "tokens": 0,
+    "sessionType": 0,
+    "varMap": {
+      "dataSourceConfigs": [
+        {"dbName": "chase_double11", "tableNames": ["活动", "商品"]}
+      ]
+    }
+  }'
+```
+
+**正常响应**（200）：
+```json
+{
+  "code": 200,
+  "msg": "Success",
+  "success": true,
+  "data": {
+    "appCode": "af524ae0-b1a6-11f1-a35d-0242ac160002",
+    "appName": "双11电商分析助手"
+  }
+}
+```
+
+**错误响应**（400 / 502）：
+```json
+{
+  "detail": "应用名已存在，请换一个名称"
+}
+```
+
+---
+
+## 12. 评估管理
 
 ### 11.1 运行评估
 
@@ -2798,6 +3046,7 @@ curl -X POST http://localhost:8080/evaluation/run \
 | AWEL Flow | 5 | `/flows` | |
 | Prompt | 5 | `/prompts` | |
 | App | 2 | `/apps` | |
+| 外部平台兼容 | 3 | 无 prefix（与外部平台路径一致） | 模型配置/数据源配置/insert智能体 |
 | 评估 | 1 | `/evaluation` | |
 | 系统 | 2 | `/` `/health` | |
-| **合计** | **63** | - | 含 2 个 deprecated 旧接口 |
+| **合计** | **66** | - | 含 2 个 deprecated 旧接口 |

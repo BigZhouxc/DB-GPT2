@@ -46,6 +46,7 @@ from modules.model import router as model_router
 from modules.flow import router as flow_router
 from modules.prompt import router as prompt_router
 from modules.app import router as app_router
+from modules.external import router as external_router
 from modules.evaluation import router as eval_router
 
 logger = logging.getLogger("uvicorn.error")
@@ -87,6 +88,7 @@ app.include_router(model_router)
 app.include_router(flow_router)
 app.include_router(prompt_router)
 app.include_router(app_router)
+app.include_router(external_router)
 app.include_router(eval_router)
 
 

@@ -3108,8 +3108,8 @@ async function showCreateAppModal() {
   let externalDs = [];
   try {
     const [mResp, dsResp] = await Promise.all([
-      api("POST", "/apps/external/model-configs", { currentPage: 1, pageSize: 1000 }),
-      api("POST", "/apps/external/datasource-configs", { currentPage: 1, pageSize: 1000, dbName: "" }),
+      api("POST", "/openPlatform/api/v1/model/config/page", { currentPage: 1, pageSize: 1000 }),
+      api("POST", "/knowledge/llm/userDataSource/get/page/v1", { currentPage: 1, pageSize: 1000, dbName: "" }),
     ]);
     externalModels = (mResp.data || []).filter(m => m.status === 1);
     externalDs = (dsResp.data || []);
@@ -3254,7 +3254,7 @@ async function createApp() {
     },
   };
   try {
-    await api("POST", "/apps/insert", body);
+    await api("POST", "/api/v1/agent/insert", body);
     toast("智能体创建成功", "success");
     closeModalDirect();
     loadApps();
