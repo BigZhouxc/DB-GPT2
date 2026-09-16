@@ -15,7 +15,7 @@ const State = {
   //   - 选了数据源 → react_agent（NL2SQL+执行）
   //   - 选了知识库 → knowledge_agent（知识检索）
   //   - 都没选 → chat_normal（纯对话）
-  selectedDatasource: "",
+  selectedDatasources: [],   // 多数据源（多选，首页聊天用）
   selectedKnowledge: "",
   selectedSkill: "",
   selectedConnectors: [],   // MCP 连接器 ID 列表（多选）
@@ -134,7 +134,7 @@ function navigate(page) {
     // 无条件新建空白会话：清空 State，显示欢迎页
     State.currentSessionId = "";
     _currentConvUid = null;
-    State.selectedDatasource = "";
+    State.selectedDatasources = [];
     State.selectedKnowledge = "";
     State.selectedSkill = "";
     State.selectedConnectors = [];
@@ -150,7 +150,7 @@ function navigate(page) {
     if (chatInput) { chatInput.value = ""; chatInput.style.height = "auto"; }
     const heroInput = document.getElementById("hero-input");
     if (heroInput) { heroInput.value = ""; heroInput.style.height = "auto"; }
-    // 恢复工具栏可点击
+    // 恢复工具栏可点击且可见
     lockAppToolbar({ database_name: "", knowledge_space: "" });
     syncToolLabels();
     _renderActiveSessions();
@@ -190,7 +190,7 @@ function dropdownItems(type) {
 }
 
 function isToolSelected(type, value) {
-  if (type === "db") return State.selectedDatasource === value;
+  if (type === "db") return State.selectedDatasources.includes(value);
   if (type === "kb") return State.selectedKnowledge === value;
   if (type === "skill") return State.selectedSkill === value;
   if (type === "conn") return State.selectedConnectors.includes(value);
@@ -240,8 +240,23 @@ function dropdownElId(type, prefix) {
 function selectTool(type, value, label, prefix) {
   prefix = prefix || "";
   if (type === "db") {
-    State.selectedDatasource = State.selectedDatasource === value ? "" : value;
-    syncButton("tool-db", State.selectedDatasource || "数据源", "tool-db-label", State.selectedDatasource, "chat-tool-db", "chat-tool-db-label");
+    const idx = State.selectedDatasources.indexOf(value);
+    if (idx >= 0) State.selectedDatasources.splice(idx, 1);
+    else State.selectedDatasources.push(value);
+    const text = State.selectedDatasources.length ? State.selectedDatasources.join(", ") : "数据源";
+    syncButton("tool-db", text, "tool-db-label", State.selectedDatasources.length, "chat-tool-db", "chat-tool-db-label");
+    // 不关闭下拉，允许多选（但空选择时关闭）
+    if (State.selectedDatasources.length === 0) {
+      const dd = document.getElementById(dropdownElId(type, prefix));
+      if (dd) dd.style.display = "none";
+    } else {
+      // 刷新选中状态（不关闭）
+      renderDropdown(type, prefix);
+      // 手动保持下拉打开
+      const dd = document.getElementById(dropdownElId(type, prefix));
+      if (dd) dd.style.display = "block";
+    }
+    return; // 不走下面的统一关闭逻辑
   } else if (type === "kb") {
     State.selectedKnowledge = State.selectedKnowledge === value ? "" : value;
     syncButton("tool-kb", label, "tool-kb-label", State.selectedKnowledge, "chat-tool-kb", "chat-tool-kb-label");
@@ -299,7 +314,7 @@ function updateChatContextDisplay() {
   const el = document.getElementById("chat-context-display");
   if (!el) return;
   let parts = [];
-  if (State.selectedDatasource) parts.push(`📊 ${State.selectedDatasource}`);
+  if (State.selectedDatasources.length) parts.push(`📊 ${State.selectedDatasources.join(", ")}`);
   if (State.selectedKnowledge) parts.push(`📚 ${State.selectedKnowledge}`);
   if (State.selectedSkill) parts.push(`🧩 ${State.selectedSkill}`);
   if (State.selectedConnectors.length) parts.push(`🔌 ${State.selectedConnectors.length} 个连接器`);
@@ -308,10 +323,10 @@ function updateChatContextDisplay() {
 
 // 推荐示例
 function useExample(question, sourceType, sourceValue) {
-  State.selectedDatasource = "";
+  State.selectedDatasources = [];
   State.selectedKnowledge = "";
   if (sourceType === "db") {
-    State.selectedDatasource = sourceValue;
+    State.selectedDatasources = [sourceValue];
     document.getElementById("tool-db-label").textContent = sourceValue;
     document.getElementById("tool-db").classList.add("active");
   }
@@ -386,7 +401,7 @@ function removeAttachedFile(fileId) {
 // ==========================================================================
 function inferMode() {
   // 优先数据源：react_agent（NL2SQL）或 react_agent_both（DB+知识库）
-  if (State.selectedDatasource) {
+  if (State.selectedDatasources.length) {
     if (State.selectedKnowledge) return "react_agent_both";
     return "react_agent";
   }
@@ -466,7 +481,7 @@ async function newChatSession() {
   _currentActiveConvUid = null;
   _currentViewingConvUid = null; // ★ 新建会话，不高亮任何项
   State.chatHistory = [];
-  State.selectedDatasource = "";
+  State.selectedDatasources = [];
   State.selectedKnowledge = "";
   State.selectedSkill = "";
   State.selectedConnectors = [];
@@ -489,14 +504,15 @@ async function newChatSession() {
 
 // 同步工具栏下拉标签到当前 State
 function syncToolLabels() {
+  const dsText = State.selectedDatasources.length ? State.selectedDatasources.join(", ") : "数据源";
   const dbLabel = document.getElementById("tool-db-label");
-  if (dbLabel) dbLabel.textContent = State.selectedDatasource ? State.selectedDatasource : "数据源";
+  if (dbLabel) dbLabel.textContent = dsText;
   const kbLabel = document.getElementById("tool-kb-label");
   if (kbLabel) kbLabel.textContent = State.selectedKnowledge ? State.selectedKnowledge : "知识库";
   const chatDbLabel = document.getElementById("chat-tool-db-label");
-  if (chatDbLabel) chatDbLabel.textContent = State.selectedDatasource ? State.selectedDatasource : "数据源";
+  if (chatDbLabel) chatDbLabel.textContent = dsText;
   const chatKbLabel = document.getElementById("chat-tool-kb-label");
-  if (chatKbLabel) chatKbLabel.textContent = State.selectedKnowledge ? State.selectedKnowledge : "知识库";
+  if (chatKbLabel) kbLabel.textContent = State.selectedKnowledge ? State.selectedKnowledge : "知识库";
 }
 
 function appendMessage(role, text) {
@@ -541,7 +557,7 @@ async function sendQuestion(presetQuestion) {
   if (!State.currentSessionId && !_currentConvUid) {
     try {
       const body = {
-        datasource_name: State.selectedDatasource || "",
+        datasource_name: State.selectedDatasources.join(",") || "",
         knowledge_space_name: State.selectedKnowledge || "",
       };
       if (_currentAppCode && _currentAppConfig?.resources?.prompt_template) {
@@ -583,7 +599,8 @@ async function sendQuestion(presetQuestion) {
   // 构建 react-agent 请求：携带 数据源 / 知识库 / 技能 / MCP连接器 / 附件文件
   const reactBody = Object.assign({}, common, {
     question,
-    chat_param: State.selectedDatasource,
+    chat_param: State.selectedDatasources.length === 1 ? State.selectedDatasources[0] : "",
+    database_names: State.selectedDatasources.length > 0 ? State.selectedDatasources : undefined,
     knowledge_space: State.selectedKnowledge || "",
     skill_name: State.selectedSkill || "",
     connector_ids: State.selectedConnectors,
@@ -776,6 +793,11 @@ async function sendReactAgent(body, aiTextEl) {
       setAgentStage(progressEl, 1);
       const entry = stepEls[stepId];
       if (entry && entry.bodyEl) {
+        // ★ 已渲染工具卡片的步骤：不允许被后续 step.meta 覆盖
+        if (entry._toolRendered) {
+          scrollChatBottom();
+          return;
+        }
         const bodyEl = entry.bodyEl;
         bodyEl.innerHTML = "";
 
@@ -791,6 +813,7 @@ async function sendReactAgent(body, aiTextEl) {
           if (result.fallback) html += `<div class="tool-badge-fallback">自动兜底</div>`;
           html += `</div>`;
           bodyEl.innerHTML = html;
+          entry._toolRendered = true;  // ★ 标记已渲染，防止后续 step.meta 覆盖
           scrollChatBottom();
           return;
         }
@@ -824,6 +847,7 @@ async function sendReactAgent(body, aiTextEl) {
           if (result.fallback) html += `<div class="tool-badge-fallback">自动兜底</div>`;
           html += `</div>`;
           bodyEl.innerHTML = html;
+          entry._toolRendered = true;  // ★ 标记已渲染，防止后续 step.meta 覆盖
           scrollChatBottom();
           return;
         }
@@ -846,6 +870,11 @@ async function sendReactAgent(body, aiTextEl) {
       const stepId = data.id || currentStepId || `step-${stepCount}`;
       const entry = stepEls[stepId];
       setAgentStage(progressEl, 2);
+      // ★ 已渲染工具卡片的步骤：不接收 chunk 覆盖
+      if (entry && entry._toolRendered) {
+        scrollChatBottom();
+        return;
+      }
       if (entry && entry.bodyEl && data.content) {
         const loading = entry.bodyEl.querySelector(".react-step-loading");
         if (loading) loading.remove();
@@ -877,13 +906,21 @@ async function sendReactAgent(body, aiTextEl) {
     } else if (type === "final") {
       setAgentStage(progressEl, 3);
       if (data.content) {
-        // 如果当前步骤的 rawContent 为空或包含错误信息，用 final 内容替换
+        // 只用 finalContainer 渲染最终答案，不覆盖任何 step 卡片
         const currentEntry = stepEls[currentStepId];
         if (currentEntry && currentEntry.bodyEl) {
           // 移除"等待数据..."占位符
           const loadingPlaceholder = currentEntry.bodyEl.querySelector(".react-step-loading");
           if (loadingPlaceholder) {
             loadingPlaceholder.remove();
+          }
+          
+          // ★ 工具卡片已渲染：不覆盖，直接渲染到 finalContainer
+          if (currentEntry._toolRendered) {
+            finalContainer.innerHTML = `<div class="react-final">${renderMarkdown(data.content)}</div>`;
+            renderCitations(finalContainer, data.citations);
+            scrollChatBottom();
+            return;
           }
           
           // 检查 rawContent 是否为空或包含错误信息
@@ -2239,7 +2276,7 @@ async function resumeConversation(convUid) {
   _saveActiveSession();
 
   // ★ 第1步：清空所有状态，防止上一个会话污染
-  State.selectedDatasource = "";
+  State.selectedDatasources = [];
   State.selectedKnowledge = "";
   State.selectedSkill = "";
   State.selectedConnectors = [];
@@ -2281,7 +2318,7 @@ async function resumeConversation(convUid) {
     }
 
     // ★ 第5步：设置 State（只从绑定信息来）
-    if (dbName) State.selectedDatasource = dbName;
+    if (dbName) State.selectedDatasources = dbName.split(",").map(s => s.trim()).filter(s => s);
     if (kbName) State.selectedKnowledge = kbName;
     // 恢复的会话始终锁定只读（不管有没有绑定）
     lockAppToolbar({ database_name: dbName, knowledge_space: kbName, lockAlways: true });
@@ -2304,7 +2341,7 @@ async function resumeConversation(convUid) {
       st.appConfig = _currentAppConfig;
       st.state = {
         currentSessionId: State.currentSessionId,
-        selectedDatasource: State.selectedDatasource,
+        selectedDatasources: State.selectedDatasources,
         selectedKnowledge: State.selectedKnowledge,
         selectedSkill: State.selectedSkill,
         selectedConnectors: [...State.selectedConnectors],
@@ -2388,7 +2425,8 @@ function _renderHistoryMessages(msgs) {
 // lockAlways=true 时无论有没有绑定都锁定（用于恢复的历史会话）
 // lockAlways=false 或未传时：有绑定才锁定，无绑定恢复可点击（用于应用模式新建会话）
 function lockAppToolbar(res) {
-  const hasDb = !!res.database_name;
+  const dbDisplay = (res.database_names && res.database_names.length) ? res.database_names.join(", ") : (res.database_name || "");
+  const hasDb = !!dbDisplay;
   const hasKb = !!res.knowledge_space;
   const lockAlways = res.lockAlways === true;
   const shouldLock = hasDb || hasKb || lockAlways;
@@ -2396,14 +2434,18 @@ function lockAppToolbar(res) {
     const btn = document.getElementById(id);
     if (btn) {
       if (shouldLock) {
-        btn.style.opacity = "0.5"; btn.style.pointerEvents = "none"; btn.title = "会话已锁定，不可修改";
+        // ★ 会话已绑定数据源/知识库：彻底隐藏按钮（绑定信息在上下文展示区可见）
+        btn.style.display = "none";
       } else {
-        btn.style.opacity = ""; btn.style.pointerEvents = ""; btn.title = "";
+        btn.style.display = "";
+        btn.style.opacity = "";
+        btn.style.pointerEvents = "";
+        btn.title = "";
       }
     }
   });
   const dbLabel = document.getElementById("chat-tool-db-label");
-  if (dbLabel) dbLabel.textContent = res.database_name || (lockAlways ? "未绑定" : "数据源");
+  if (dbLabel) dbLabel.textContent = dbDisplay || (lockAlways ? "未绑定" : "数据源");
   const kbLabel = document.getElementById("chat-tool-kb-label");
   if (kbLabel) kbLabel.textContent = res.knowledge_space || (lockAlways ? "未绑定" : "知识库");
 }
@@ -2643,7 +2685,7 @@ function _ensureSessionState(convUid) {
       convUid,
       state: {
         currentSessionId: "",
-        selectedDatasource: "",
+        selectedDatasources: [],
         selectedKnowledge: "",
         selectedSkill: "",
         selectedConnectors: [],
@@ -2745,7 +2787,7 @@ function _saveActiveSession() {
     appConfig: _currentAppConfig,
     state: {
       currentSessionId: State.currentSessionId,
-      selectedDatasource: State.selectedDatasource,
+      selectedDatasources: State.selectedDatasources,
       selectedKnowledge: State.selectedKnowledge,
       selectedSkill: State.selectedSkill,
       selectedConnectors: [...State.selectedConnectors],
@@ -2811,7 +2853,7 @@ function switchToActiveSession(convUid) {
   _currentAppConfig = s.appConfig;
   _currentConvUid = s.convUid;
   State.currentSessionId = s.state.currentSessionId || s.convUid;
-  State.selectedDatasource = s.state.selectedDatasource || "";
+  State.selectedDatasources = s.state.selectedDatasources || [];
   State.selectedKnowledge = s.state.selectedKnowledge || "";
   State.selectedSkill = s.state.selectedSkill || "";
   State.selectedConnectors = s.state.selectedConnectors || [];
@@ -2827,10 +2869,10 @@ function switchToActiveSession(convUid) {
     lockAppToolbar(_currentAppConfig.resources || {});
     _showAppIndicator();
   } else {
-    const hasDs = !!State.selectedDatasource;
+    const hasDs = State.selectedDatasources.length > 0;
     const hasKb = !!State.selectedKnowledge;
     if (hasDs || hasKb) {
-      lockAppToolbar({ database_name: State.selectedDatasource, knowledge_space: State.selectedKnowledge, lockAlways: true });
+      lockAppToolbar({ database_name: State.selectedDatasources.join(","), knowledge_space: State.selectedKnowledge, lockAlways: true });
     } else {
       lockAppToolbar({ database_name: "", knowledge_space: "" });
     }
@@ -2880,7 +2922,8 @@ function _showAppIndicator() {
   if (indicator && _currentAppConfig) {
     const res = _currentAppConfig.resources || {};
     const parts = [`📦 ${_currentAppConfig.app_name}`];
-    if (res.database_name) parts.push(`📊 ${res.database_name} (已锁定)`);
+    const dsDisplay = (res.database_names && res.database_names.length) ? res.database_names.join(", ") : (res.database_name || "");
+    if (dsDisplay) parts.push(`📊 ${dsDisplay} (已锁定)`);
     if (res.knowledge_space) parts.push(`📚 ${res.knowledge_space} (已锁定)`);
     indicator.innerHTML = parts.join(" | ") +
       ` <button class="btn btn-sm" style="margin-left:8px" onclick="newAppSession()">新建会话</button>` +
@@ -2910,7 +2953,8 @@ async function loadApps() {
           const detail = await api("GET", `/apps/${a.app_code}`);
           const res = detail.app.resources || {};
           const parts = [];
-          if (res.database_name) parts.push(`<span class="app-badge">📊 ${escapeHtml(res.database_name)}</span>`);
+          const dsDisplay = (res.database_names && res.database_names.length) ? res.database_names.join(", ") : (res.database_name || "");
+          if (dsDisplay) parts.push(`<span class="app-badge">📊 ${escapeHtml(dsDisplay)}</span>`);
           if (res.knowledge_space) parts.push(`<span class="app-badge">📚 ${escapeHtml(res.knowledge_space)}</span>`);
           if (res.model) parts.push(`<span class="app-badge">🤖 ${escapeHtml(res.model)}</span>`);
           badges = parts.join(" ");
@@ -2939,11 +2983,7 @@ async function loadApps() {
 }
 
 async function showCreateAppModal() {
-  const dsOptions = State.datasourceList.map(d => `<option value="${escapeAttr(d.db_name)}">${escapeHtml(d.db_name)} (${escapeHtml(d.db_type)})</option>`).join("");
-  const kbOptions = (State.knowledgeSpaces || []).map(k => {
-    const name = typeof k === "string" ? k : (k.name || k.space_name || "");
-    return `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`;
-  }).join("");
+  const dsCheckboxes = State.datasourceList.map(d => `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(d.db_name)}" onchange="updateAppDbSummary()"> <span>${escapeHtml(d.db_name)}</span> <span class="tag tag-blue">${escapeHtml(d.db_type)}</span></label>`).join("");
   const modelOptions = (State.modelList || []).map(m => `<option value="${escapeAttr(m.model_name)}">${escapeHtml(m.model_name)}</option>`).join("");
   // 直接获取提示词列表（不依赖 preloadData 缓存）
   let promptOptions = "";
@@ -2964,8 +3004,8 @@ async function showCreateAppModal() {
     <div class="form-field" style="display:none;"><label>对话模式</label><select class="select" id="app-team-mode">
       <option value="chat_react_agent" selected>ReAct Agent（默认）</option>
     </select></div>
-    <div class="form-field"><label>📊 绑定数据源（创建后不可变）</label><select class="select" id="app-database"><option value="">不绑定</option>${dsOptions}</select></div>
-    <div class="form-field"><label>📚 绑定知识库（创建后不可变）</label><select class="select" id="app-knowledge"><option value="">不绑定</option>${kbOptions}</select></div>
+    <div class="form-field"><label>📊 绑定数据源（可多选，创建后不可变）</label><div class="checkbox-group" id="app-databases">${dsCheckboxes}</div><div class="form-hint" id="app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">未选择数据源</div></div>
+    <div class="form-field"><label>📚 绑定知识库（创建后不可变）</label><select class="select" id="app-knowledge"><option value="">不绑定</option>${(State.knowledgeSpaces || []).map(k => { const name = typeof k === "string" ? k : (k.name || k.space_name || ""); return `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`; }).join("")}</select></div>
     <div class="form-field"><label>模型</label><select class="select" id="app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
     <div class="form-field"><label>📝 自定义提示词</label><select class="select" id="app-prompt"><option value="">不添加</option>${promptOptions}</select>
     <div class="form-hint" style="margin-top:4px">💡 选中的提示词会<strong>追加</strong>到默认 system prompt 的「Please Solve this task:」之前，作为业务约束/上下文补充。ReAct 格式约束保持不变。</div></div>
@@ -2981,16 +3021,25 @@ async function showCreateAppModal() {
   ]);
 }
 
+function updateAppDbSummary() {
+  const checked = document.querySelectorAll('#app-databases input[type="checkbox"]:checked');
+  const summary = document.getElementById("app-db-summary");
+  if (summary) {
+    summary.textContent = checked.length ? `已选 ${checked.length} 个: ${Array.from(checked).map(cb => cb.value).join(", ")}` : "未选择数据源";
+  }
+}
+
 async function createApp() {
   const name = document.getElementById("app-name").value;
   if (!name) { toast("应用名称不能为空", "error"); return; }
   const questions = document.getElementById("app-questions").value.split("\n").map(s => s.trim()).filter(s => s);
+  const selectedDbs = Array.from(document.querySelectorAll('#app-databases input[type="checkbox"]:checked')).map(cb => cb.value);
   const body = {
     app_name: name,
     app_describe: document.getElementById("app-describe").value,
     team_mode: document.getElementById("app-team-mode").value,  // 字段名兼容后端
     chat_mode: document.getElementById("app-team-mode").value,
-    database_name: document.getElementById("app-database").value,
+    database_names: selectedDbs,
     knowledge_space: document.getElementById("app-knowledge").value,
     model: document.getElementById("app-model").value,
     prompt_template: document.getElementById("app-prompt").value,
@@ -3015,7 +3064,7 @@ async function showAppDetail(appCode) {
       <div class="form-field"><label>应用名称</label><div class="form-readonly">${escapeHtml(app.app_name || "")}</div></div>
       <div class="form-field"><label>描述</label><div class="form-readonly">${escapeHtml(app.app_describe || "无")}</div></div>
       <div class="form-field"><label>Agent 模式</label><div class="form-readonly">${escapeHtml(app.team_mode || "single_agent")}</div></div>
-      <div class="form-field"><label>📊 数据源（已绑定）</label><div class="form-readonly">${escapeHtml(res.database_name || "未绑定")}</div></div>
+      <div class="form-field"><label>📊 数据源（已绑定）</label><div class="form-readonly">${escapeHtml((res.database_names || []).join(", ") || res.database_name || "未绑定")}</div></div>
       <div class="form-field"><label>📚 知识库（已绑定）</label><div class="form-readonly">${escapeHtml(res.knowledge_space || "未绑定")}</div></div>
       <div class="form-field"><label>🤖 模型</label><div class="form-readonly">${escapeHtml(res.model || "默认")}</div></div>
       <div class="form-field"><label>推荐问题</label><div class="form-readonly">${(app.recommend_questions || []).map(q => `• ${escapeHtml(q)}`).join("<br>") || "无"}</div></div>
@@ -3049,7 +3098,8 @@ async function editAppConfig(appCode) {
         return `<option value="${escapeAttr(code)}" ${code === res.prompt_template ? "selected" : ""}>${escapeHtml(name)}</option>`;
       }).join("");
     } catch {}
-    const dsOptions = State.datasourceList.map(d => `<option value="${escapeAttr(d.db_name)}" ${d.db_name === res.database_name ? "selected" : ""}>${escapeHtml(d.db_name)}</option>`).join("");
+    const boundDbs = new Set(res.database_names || (res.database_name ? res.database_name.split(",").map(s => s.trim()) : []));
+    const dsCheckboxes = State.datasourceList.map(d => `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(d.db_name)}" ${boundDbs.has(d.db_name) ? "checked" : ""} onchange="updateEditAppDbSummary()"> <span>${escapeHtml(d.db_name)}</span> <span class="tag tag-blue">${escapeHtml(d.db_type)}</span></label>`).join("");
     const kbOptions = (State.knowledgeSpaces || []).map(k => {
       const name = typeof k === "string" ? k : (k.name || k.space_name || "");
       return `<option value="${escapeAttr(name)}" ${name === res.knowledge_space ? "selected" : ""}>${escapeHtml(name)}</option>`;
@@ -3061,7 +3111,7 @@ async function editAppConfig(appCode) {
       <div class="form-field" style="display:none;"><label>对话模式</label><select class="select" id="edit-app-chat-mode">
         <option value="chat_react_agent" selected>ReAct Agent（默认）</option>
       </select></div>
-      <div class="form-field"><label>📊 数据源</label><select class="select" id="edit-app-database"><option value="">不绑定</option>${dsOptions}</select></div>
+      <div class="form-field"><label>📊 数据源（可多选）</label><div class="checkbox-group" id="edit-app-databases">${dsCheckboxes}</div><div class="form-hint" id="edit-app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">${boundDbs.size ? `已选 ${boundDbs.size} 个` : "未选择数据源"}</div></div>
       <div class="form-field"><label>📚 知识库</label><select class="select" id="edit-app-knowledge"><option value="">不绑定</option>${kbOptions}</select></div>
       <div class="form-field"><label>模型</label><select class="select" id="edit-app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
       <div class="form-field"><label>📝 自定义提示词</label><select class="select" id="edit-app-prompt"><option value="">不添加</option>${promptOptions}</select>
@@ -3075,12 +3125,21 @@ async function editAppConfig(appCode) {
   } catch (e) { toast("获取详情失败: " + e.message, "error"); }
 }
 
+function updateEditAppDbSummary() {
+  const checked = document.querySelectorAll('#edit-app-databases input[type="checkbox"]:checked');
+  const summary = document.getElementById("edit-app-db-summary");
+  if (summary) {
+    summary.textContent = checked.length ? `已选 ${checked.length} 个: ${Array.from(checked).map(cb => cb.value).join(", ")}` : "未选择数据源";
+  }
+}
+
 async function submitEditAppConfig(appCode) {
+  const selectedDbs = Array.from(document.querySelectorAll('#edit-app-databases input[type="checkbox"]:checked')).map(cb => cb.value);
   const body = {
     app_name: document.getElementById("edit-app-name").value,
     app_describe: document.getElementById("edit-app-describe").value,
     chat_mode: document.getElementById("edit-app-chat-mode").value,
-    database_name: document.getElementById("edit-app-database").value,
+    database_names: selectedDbs,
     knowledge_space: document.getElementById("edit-app-knowledge").value,
     model: document.getElementById("edit-app-model").value,
     prompt_template: document.getElementById("edit-app-prompt").value,
@@ -3113,7 +3172,7 @@ async function enterAppChat(appCode, appName) {
   _currentConvUid = null;
   _currentActiveConvUid = null;
   _currentViewingConvUid = null;
-  State.selectedDatasource = "";
+  State.selectedDatasources = [];
   State.selectedKnowledge = "";
   State.selectedSkill = "";
   State.selectedConnectors = [];
@@ -3140,7 +3199,11 @@ async function enterAppChat(appCode, appName) {
   // 设置应用模式
   _currentAppCode = appCode;
   _currentAppConfig = appConfig;
-  if (res.database_name) State.selectedDatasource = res.database_name;
+  if (res.database_names && res.database_names.length > 0) {
+    State.selectedDatasources = res.database_names;
+  } else if (res.database_name) {
+    State.selectedDatasources = res.database_name.split(",").map(s => s.trim()).filter(s => s);
+  }
   if (res.knowledge_space) State.selectedKnowledge = res.knowledge_space;
   // 应用模式下锁定数据源/知识库按钮（不可改）
   lockAppToolbar(res);
@@ -3150,7 +3213,8 @@ async function enterAppChat(appCode, appName) {
   if (indicator && appConfig) {
     const res2 = appConfig.resources || {};
     const parts = [`📦 ${appConfig.app_name}`];
-    if (res2.database_name) parts.push(`📊 ${res2.database_name} (已锁定)`);
+    const dsDisplay2 = (res2.database_names && res2.database_names.length) ? res2.database_names.join(", ") : (res2.database_name || "");
+    if (dsDisplay2) parts.push(`📊 ${dsDisplay2} (已锁定)`);
     if (res2.knowledge_space) parts.push(`📚 ${res2.knowledge_space} (已锁定)`);
     indicator.innerHTML = parts.join(" | ") +
       ` <button class="btn btn-sm" style="margin-left:8px" onclick="newAppSession()">新建会话</button>` +
@@ -3171,7 +3235,7 @@ function exitAppChat() {
   _currentActiveConvUid = null;  // 清除活跃会话索引
   _currentViewingConvUid = null;
   // 清理 State 中应用锁定的选择
-  State.selectedDatasource = "";
+  State.selectedDatasources = [];
   State.selectedKnowledge = "";
   const indicator = document.getElementById("app-indicator");
   if (indicator) indicator.style.display = "none";
@@ -3186,10 +3250,10 @@ function exitAppChat() {
   if (chatInput) { chatInput.value = ""; chatInput.style.height = "auto"; }
   const heroInput = document.getElementById("hero-input");
   if (heroInput) { heroInput.value = ""; heroInput.style.height = "auto"; }
-  // 恢复工具栏按钮可点击
+  // 恢复工具栏按钮可点击且可见
   ["chat-tool-db", "chat-tool-kb"].forEach(id => {
     const btn = document.getElementById(id);
-    if (btn) { btn.style.opacity = ""; btn.style.pointerEvents = ""; btn.title = ""; }
+    if (btn) { btn.style.display = ""; btn.style.opacity = ""; btn.style.pointerEvents = ""; btn.title = ""; }
   });
   // 恢复按钮标签
   syncToolLabels();
@@ -3256,7 +3320,7 @@ async function resumeAppSession(convUid, summary) {
   toast(`正在恢复会话: ${summary}`, "info");
 
   // ★ 清空状态，防止污染
-  State.selectedDatasource = "";
+  State.selectedDatasources = [];
   State.selectedKnowledge = "";
 
   // ★ 并行加载消息 + 绑定信息
@@ -3282,7 +3346,7 @@ async function resumeAppSession(convUid, summary) {
       } catch {}
     }
 
-    if (dbName) State.selectedDatasource = dbName;
+    if (dbName) State.selectedDatasources = dbName.split(",").map(s => s.trim()).filter(s => s);
     if (kbName) State.selectedKnowledge = kbName;
     // 恢复的会话始终锁定
     lockAppToolbar({ database_name: dbName, knowledge_space: kbName, lockAlways: true });
@@ -3305,7 +3369,7 @@ async function resumeAppSession(convUid, summary) {
       st.appConfig = _currentAppConfig;
       st.state = {
         currentSessionId: State.currentSessionId,
-        selectedDatasource: State.selectedDatasource,
+        selectedDatasources: State.selectedDatasources,
         selectedKnowledge: State.selectedKnowledge,
         selectedSkill: State.selectedSkill,
         selectedConnectors: [...State.selectedConnectors],

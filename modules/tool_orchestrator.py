@@ -94,31 +94,35 @@ class ToolOrchestrator:
             result = self._parse_json_response(content)
             ds = result.get("datasource", "").strip()
 
-            # 校验返回的数据源在候选列表中
+            # 校验返回的数据源在候选列表中（精确 → 小写宽松 → 包含匹配）
             if ds and ds in db_names:
                 return {
                     "datasource": ds,
                     "reason": result.get("reason", ""),
                 }
-            else:
-                # LLM 返回了不在列表中的数据源，尝试模糊匹配
-                for name in db_names:
-                    if ds and ds.lower() in name.lower():
-                        return {
-                            "datasource": name,
-                            "reason": f"模糊匹配: {result.get('reason', '')}",
-                        }
-                # 兜底：取第一个
-                logger.warning(
-                    "数据源选择 LLM 返回值 %r 不在候选列表 %r 中，使用兜底",
-                    ds,
-                    db_names,
-                )
-                return {
-                    "datasource": db_names[0],
-                    "reason": f"LLM 返回值不在候选列表中，默认选择。原始返回: {ds}",
-                    "fallback": True,
-                }
+            for name in db_names:
+                if ds and name.lower() == ds.lower():
+                    return {
+                        "datasource": name,
+                        "reason": result.get("reason", ""),
+                    }
+            for name in db_names:
+                if ds and (ds.lower() in name.lower() or name.lower() in ds.lower()):
+                    return {
+                        "datasource": name,
+                        "reason": f"模糊匹配: {result.get('reason', '')}",
+                    }
+            # 兜底：取第一个
+            logger.warning(
+                "数据源选择 LLM 返回值 %r 不在候选列表 %r 中，使用兜底",
+                ds,
+                db_names,
+            )
+            return {
+                "datasource": db_names[0],
+                "reason": f"LLM 返回值不在候选列表中，默认选择。原始返回: {ds}",
+                "fallback": True,
+            }
         except Exception as e:
             logger.warning("数据源选择失败: %s，使用兜底", e)
             return {
@@ -162,38 +166,67 @@ class ToolOrchestrator:
             content = await self._call_llm(prompt)
             result = self._parse_json_response(content)
             tables = result.get("tables", [])
+            if isinstance(tables, str):
+                tables = [t.strip() for t in tables.split(",") if t.strip()]
             fields = result.get("fields", {})
 
-            # 校验返回的表名在 schema 中存在
-            valid_tables = [t for t in tables if isinstance(t, str) and t]
-            schema_tables = {t["table_name"] for t in schema.get("tables", [])}
+            # 构建 schema 表名索引：精确 + 小写宽松匹配（LLM 常有大小写/前缀差异）
+            schema_tables = [t["table_name"] for t in schema.get("tables", [])]
+            schema_lower_map = {t.lower(): t for t in schema_tables}
             validated_tables = []
             validated_fields = {}
 
-            for t in valid_tables:
-                if t in schema_tables:
-                    validated_tables.append(t)
-                    # 校验字段名也在 schema 中
-                    tbl_cols = {
-                        c["name"] for st in schema["tables"] if st["table_name"] == t for c in st["columns"]
-                    }
-                    raw_fields = fields.get(t, [])
-                    if isinstance(raw_fields, list):
-                        validated_fields[t] = [
-                            f for f in raw_fields if isinstance(f, str) and f in tbl_cols
-                        ]
+            def _resolve_table(name: str) -> Optional[str]:
+                """把 LLM 返回的表名映射到 schema 中的真实表名（宽松匹配）。"""
+                if not isinstance(name, str) or not name.strip():
+                    return None
+                name = name.strip()
+                if name in schema_tables:
+                    return name
+                if name.lower() in schema_lower_map:
+                    return schema_lower_map[name.lower()]
+                # 含 schema 前缀（如 dbname.table）时取最后一段
+                short = name.split(".")[-1].strip()
+                if short in schema_tables:
+                    return short
+                if short.lower() in schema_lower_map:
+                    return schema_lower_map[short.lower()]
+                return None
+
+            for t in tables:
+                real_name = _resolve_table(t)
+                if not real_name:
+                    continue
+                if real_name not in validated_tables:
+                    validated_tables.append(real_name)
+                # 校验字段名也在 schema 中
+                tbl_cols = {
+                    c["name"] for st in schema["tables"] if st["table_name"] == real_name for c in st["columns"]
+                }
+                col_lower_map = {c.lower(): c for c in tbl_cols}
+                raw_fields = fields.get(t, []) if isinstance(fields, dict) else []
+                if isinstance(raw_fields, list):
+                    valid_cols = []
+                    for f in raw_fields:
+                        if not isinstance(f, str) or not f.strip():
+                            continue
+                        f = f.strip()
+                        if f in tbl_cols:
+                            valid_cols.append(f)
+                        elif f.lower() in col_lower_map:
+                            valid_cols.append(col_lower_map[f.lower()])
+                    validated_fields[real_name] = valid_cols
 
             if not validated_tables:
-                # LLM 返回的表名都不在 schema 中，兜底返回全部表名
-                all_table_names = [t["table_name"] for t in schema.get("tables", [])]
+                # LLM 返回的表名都无法匹配，兜底返回全部表名
                 logger.warning(
                     "数据表选择 LLM 返回表名 %r 不在 schema 中，使用全部表",
                     tables,
                 )
                 return {
-                    "tables": all_table_names,
+                    "tables": schema_tables,
                     "fields": {},
-                    "reason": "LLM 返回表名无效，使用全部表",
+                    "reason": f"LLM 返回表名无法匹配 schema（原始返回: {tables}），使用全部表",
                     "fallback": True,
                 }
 
@@ -228,7 +261,8 @@ class ToolOrchestrator:
             "messages": [{"role": "user", "content": prompt}],
             "model": self.model,
             "temperature": 0.1,
-            "max_tokens": 1024,
+            # 推理模型的思考过程会消耗 token，给足余量防止 JSON 被截断
+            "max_tokens": 2048,
         }
 
         async with httpx.AsyncClient(
@@ -416,12 +450,22 @@ class ToolOrchestrator:
         支持多种格式：
         1. 纯 JSON
         2. markdown 代码块包裹的 JSON
-        3. 文本中嵌入的 JSON
+        3. 含 <think> 思考过程的响应（推理模型）
+        4. 文本中嵌入的 JSON（优先取含 tables/datasource 键的对象）
         """
         if not content:
             return {}
 
         content = content.strip()
+
+        # 0. 剥离推理模型的思考标签 <think>...</think>（DeepSeek 类）
+        think_m = re.search(r"</think>\s*(.*)$", content, re.DOTALL)
+        if think_m:
+            content = think_m.group(1).strip()
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+        if not content:
+            return {}
 
         # 1. 直接 JSON 解析
         try:
@@ -429,7 +473,7 @@ class ToolOrchestrator:
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # 2. markdown 代码块中的 JSON
+        # 2. markdown 代码块中的 JSON（支持嵌套花括号，非贪婪到 ``` 结尾）
         m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
         if m:
             try:
@@ -437,22 +481,31 @@ class ToolOrchestrator:
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        # 3. 文本中第一个 JSON 对象
-        m2 = re.search(r"\{[^{}]*\}", content, re.DOTALL)
-        if m2:
-            try:
-                return json.loads(m2.group(0))
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-        # 4. 查找最外层花括号
+        # 3. 最外层花括号整体截取（正确处理嵌套，避免只匹配到内层 fields 对象）
         start = content.find("{")
         end = content.rfind("}")
         if start >= 0 and end > start:
             try:
-                return json.loads(content[start : end + 1])
+                parsed = json.loads(content[start : end + 1])
+                if isinstance(parsed, dict) and ("tables" in parsed or "datasource" in parsed):
+                    return parsed
             except (json.JSONDecodeError, ValueError):
                 pass
+
+        # 4. 兜底：文本中所有候选 JSON 对象，优先取含 tables/datasource 键的
+        candidates = []
+        for m2 in re.finditer(r"\{[^{}]*\}", content, re.DOTALL):
+            try:
+                obj = json.loads(m2.group(0))
+                if isinstance(obj, dict):
+                    candidates.append(obj)
+            except (json.JSONDecodeError, ValueError):
+                continue
+        for obj in candidates:
+            if "tables" in obj or "datasource" in obj:
+                return obj
+        if candidates:
+            return candidates[0]
 
         logger.warning("无法解析 LLM 响应为 JSON: %s", content[:200])
         return {}

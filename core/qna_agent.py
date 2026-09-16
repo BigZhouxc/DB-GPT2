@@ -328,6 +328,7 @@ class QnAAgent:
 
             # --- 工具 1: 数据源选择 ---
             yield make_tool_sse("step.start", "datasource_select", {
+                "id": "tool-ds-select",
                 "tool_name": "数据源选择",
                 "thought": f"从 {len(database_names)} 个候选数据源中选择最合适的一个",
             })
@@ -336,6 +337,7 @@ class QnAAgent:
                 ds_result = await orchestrator.select_datasource(question, database_names)
                 selected_ds = ds_result.get("datasource", "")
                 yield make_tool_sse("step.meta", "datasource_select", {
+                    "id": "tool-ds-select",
                     "tool_name": "数据源选择",
                     "result": ds_result,
                 })
@@ -347,16 +349,18 @@ class QnAAgent:
                 }
                 selected_ds = database_names[0]
                 yield make_tool_sse("step.meta", "datasource_select", {
+                    "id": "tool-ds-select",
                     "tool_name": "数据源选择",
                     "result": ds_result,
                     "error": str(e),
                 })
 
-            yield make_tool_sse("step.done", "datasource_select", {})
+            yield make_tool_sse("step.done", "datasource_select", {"id": "tool-ds-select"})
 
             # --- 工具 2: 数据表选择 ---
             if selected_ds:
                 yield make_tool_sse("step.start", "table_select", {
+                    "id": "tool-tbl-select",
                     "tool_name": "数据表选择",
                     "thought": f"从数据源 {selected_ds} 中选择相关数据表",
                 })
@@ -365,6 +369,7 @@ class QnAAgent:
                     tbl_result = await orchestrator.select_tables(question, selected_ds)
                     table_hints = tbl_result
                     yield make_tool_sse("step.meta", "table_select", {
+                        "id": "tool-tbl-select",
                         "tool_name": "数据表选择",
                         "result": tbl_result,
                     })
@@ -376,24 +381,61 @@ class QnAAgent:
                         "fallback": True,
                     }
                     yield make_tool_sse("step.meta", "table_select", {
+                        "id": "tool-tbl-select",
                         "tool_name": "数据表选择",
                         "result": tbl_result,
                         "error": str(e),
                     })
 
-                yield make_tool_sse("step.done", "table_select", {})
+                yield make_tool_sse("step.done", "table_select", {"id": "tool-tbl-select"})
 
         elif database_names and len(database_names) == 1:
+            # 单数据源：跳过数据源选择（无选择意义），但仍执行数据表选择工具
             selected_ds = database_names[0]
+            orchestrator = ToolOrchestrator(model=self.model)
+
             yield make_tool_sse("step.start", "datasource_select", {
+                "id": "tool-ds-select",
                 "tool_name": "数据源选择",
                 "thought": "仅有一个数据源，直接使用",
             })
             yield make_tool_sse("step.meta", "datasource_select", {
+                "id": "tool-ds-select",
                 "tool_name": "数据源选择",
                 "result": {"datasource": selected_ds, "reason": "仅有一个数据源，直接使用", "fallback": True},
             })
-            yield make_tool_sse("step.done", "datasource_select", {})
+            yield make_tool_sse("step.done", "datasource_select", {"id": "tool-ds-select"})
+
+            # --- 工具 2: 数据表选择（单库也要选表） ---
+            yield make_tool_sse("step.start", "table_select", {
+                "id": "tool-tbl-select",
+                "tool_name": "数据表选择",
+                "thought": f"从数据源 {selected_ds} 中选择相关数据表",
+            })
+
+            try:
+                tbl_result = await orchestrator.select_tables(question, selected_ds)
+                table_hints = tbl_result
+                yield make_tool_sse("step.meta", "table_select", {
+                    "id": "tool-tbl-select",
+                    "tool_name": "数据表选择",
+                    "result": tbl_result,
+                })
+            except Exception as e:
+                tbl_result = {
+                    "tables": [],
+                    "fields": {},
+                    "reason": f"工具异常: {e}",
+                    "fallback": True,
+                }
+                yield make_tool_sse("step.meta", "table_select", {
+                    "id": "tool-tbl-select",
+                    "tool_name": "数据表选择",
+                    "result": tbl_result,
+                    "error": str(e),
+                })
+
+            yield make_tool_sse("step.done", "table_select", {"id": "tool-tbl-select"})
 
         # ========== 委托 DB-GPT react-agent ==========
         final_db = selected_ds or database_name or chat_param or ""

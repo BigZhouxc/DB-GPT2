@@ -595,3 +595,44 @@ table.data-table tr:hover td { background: var(--bg-hover); }
   color: var(--text-tertiary);
   font-style: italic;
 }
+
+/* ==========================================================================
+   多数据源复选框组（应用创建/编辑弹窗）
+   ========================================================================== */
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg-primary);
+}
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.checkbox-item:hover {
+  background: var(--bg-secondary);
+}
+.checkbox-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--primary, #4f46e5);
+  flex-shrink: 0;
+}
+.checkbox-item span {
+  flex: 1;
+}
+.checkbox-item .tag {
+  flex-shrink: 0;
+}
