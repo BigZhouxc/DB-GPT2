@@ -435,6 +435,10 @@ table.data-table tr:hover td { background: var(--bg-hover); }
 .modal-close:hover { color: var(--text-primary); background: var(--bg-hover); }
 .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
 .modal-footer { padding: 12px 20px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 8px; }
+
+/* 第二层模态框（叠加在第一层之上，用于选择数据源等子弹窗） */
+.modal-overlay-2 { z-index: 1100; }
+.modal-overlay-2 .modal { max-width: 720px; max-height: 85vh; }
 .form-field { margin-bottom: 16px; }
 .form-field label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
 /* 上传弹窗分区 */

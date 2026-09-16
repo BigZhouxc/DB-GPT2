@@ -2569,6 +2569,16 @@ function openModal(title, bodyHtml, buttons) {
 function closeModal(e) { if (e.target.id === "modal-overlay") closeModalDirect(); }
 function closeModalDirect() { document.getElementById("modal-overlay").style.display = "none"; }
 
+// ===== 第二层模态框（叠加在主模态框之上，用于选择数据源等子弹窗） =====
+function openModal2(title, bodyHtml, buttons) {
+  document.getElementById("modal2-title").textContent = title;
+  document.getElementById("modal2-body").innerHTML = bodyHtml;
+  document.getElementById("modal2-footer").innerHTML = (buttons || []).map(b => `<button class="${b.class}"${b.style ? ` style="${b.style}"` : ''} onclick="${b.action}">${b.text}</button>`).join("");
+  document.getElementById("modal-overlay-2").style.display = "flex";
+}
+function closeModal2(e) { if (e.target.id === "modal-overlay-2") closeModal2Direct(); }
+function closeModal2Direct() { document.getElementById("modal-overlay-2").style.display = "none"; }
+
 // ==========================================================================
 // 健康检查
 // ==========================================================================
@@ -3485,7 +3495,7 @@ function _renderSelectDsModal() {
 
   const selectedCount = _selectDsChecked.size;
 
-  openModal("选择数据源", `
+  openModal2("选择数据源", `
     <div class="select-ds-modal">
       <div class="select-ds-search">
         <input class="input" placeholder="搜索数据源名称" oninput="_filterSelectDs(this.value)" id="select-ds-search-input">
@@ -3514,12 +3524,12 @@ function _renderSelectDsModal() {
       <div class="select-ds-footer">
         <span class="select-ds-selected-count">已选择 <strong>${selectedCount}</strong> 项</span>
         <div style="display:flex;gap:8px">
-          <button class="btn" onclick="closeModalDirect()">取消</button>
+          <button class="btn" onclick="closeModal2Direct()">取消</button>
           <button class="btn btn-primary" onclick="_confirmSelectDs()">确认添加</button>
         </div>
       </div>
     </div>
-  `, []);  // 无默认 footer 按钮，自定义 footer 在 body 内
+  `);  // 用第二层模态框，不影响底层编辑弹窗
 }
 
 function _filterSelectDs(keyword) {
@@ -3564,7 +3574,7 @@ async function _confirmSelectDs() {
       _editBoundDs.push({ ...ds, tableNames: [] });
     }
   }
-  closeModalDirect();
+  closeModal2Direct();  // 只关第二层弹窗，编辑弹窗保持不变
   renderDsTable();
 }
 

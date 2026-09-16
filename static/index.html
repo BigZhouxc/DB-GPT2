@@ -408,6 +408,18 @@
   </div>
 </div>
 
+<!-- 第二层模态框（用于选择数据源弹窗，叠加在编辑弹窗之上） -->
+<div class="modal-overlay modal-overlay-2" id="modal-overlay-2" style="display:none;" onclick="closeModal2(event)">
+  <div class="modal" id="modal2-content" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modal2-title">标题</span>
+      <button class="modal-close" onclick="closeModal2Direct()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="modal-body" id="modal2-body"></div>
+    <div class="modal-footer" id="modal2-footer"></div>
+  </div>
+</div>
+
 <!-- Toast 容器 -->
 <div class="toast-container" id="toast-container" data-page-node-id="E3Z8s3fDM9ojEUPy2LZTeI"></div>
 
