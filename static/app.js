@@ -3103,8 +3103,25 @@ async function loadApps() {
 }
 
 async function showCreateAppModal() {
-  const dsCheckboxes = State.datasourceList.map(d => `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(d.db_name)}" data-ds-id="${d.id}" onchange="onAppDsCheck(this, 'create')"> <span>${escapeHtml(d.db_name)}</span> <span class="tag tag-blue">${escapeHtml(d.db_type)}</span></label><div class="app-table-picker" id="create-tables-${d.id}" style="display:none;margin:2px 0 6px 24px;"></div>`).join("");
-  const modelOptions = (State.modelList || []).map(m => `<option value="${escapeAttr(m.model_name)}">${escapeHtml(m.model_name)}</option>`).join("");
+  // 获取外部平台模型配置和数据源配置
+  let externalModels = [];
+  let externalDs = [];
+  try {
+    const [mResp, dsResp] = await Promise.all([
+      api("POST", "/apps/external/model-configs", { currentPage: 1, pageSize: 1000 }),
+      api("POST", "/apps/external/datasource-configs", { currentPage: 1, pageSize: 1000, dbName: "" }),
+    ]);
+    externalModels = (mResp.data || []).filter(m => m.status === 1);
+    externalDs = (dsResp.data || []);
+  } catch (e) {
+    // 代理失败时回退到本地列表
+    console.warn("外部平台配置获取失败，回退本地:", e);
+    externalModels = (State.modelList || []).map(m => ({ modelName: m.model_name, sourceName: "" }));
+    externalDs = (State.datasourceList || []).map(d => ({ id: d.id, dbName: d.db_name, name: d.db_name, description: d.comment || "", dbType: 0 }));
+  }
+
+  const dsCheckboxes = externalDs.map(d => `<label class="checkbox-item"><input type="checkbox" value="${escapeAttr(d.dbName || d.name)}" data-ds-id="${d.id}" data-ds-desc="${escapeAttr(d.description || '')}" onchange="onAppDsCheck(this, 'create')"> <span>${escapeHtml(d.dbName || d.name)}</span>${d.description ? ` <span style="color:var(--text-tertiary);font-size:11px">${escapeHtml(d.description.slice(0, 30))}</span>` : ""}</label><div class="app-table-picker" id="create-tables-${d.id}" style="display:none;margin:2px 0 6px 24px;"></div>`).join("");
+  const modelOptions = externalModels.map(m => `<option value="${escapeAttr(m.modelName)}">${escapeHtml(m.modelName)}${m.sourceName ? ` (${escapeHtml(m.sourceName)})` : ""}</option>`).join("");
   // 直接获取提示词列表（不依赖 preloadData 缓存）
   let promptOptions = "";
   try {
@@ -3118,14 +3135,13 @@ async function showCreateAppModal() {
     }).join("");
   } catch {}
 
-  openModal("创建应用", `
-    <div class="form-field"><label>应用名称 *</label><input class="input" id="app-name" placeholder="如：双11电商分析助手"></div>
-    <div class="form-field"><label>应用描述</label><input class="input" id="app-describe" placeholder="如：基于chase_double11的电商数据分析"></div>
+  openModal("创建智能体", `
+    <div class="form-field"><label>智能体名称 *</label><input class="input" id="app-name" placeholder="如：双11电商分析助手"></div>
+    <div class="form-field"><label>描述</label><input class="input" id="app-describe" placeholder="如：基于chase_double11的电商数据分析"></div>
     <div class="form-field" style="display:none;"><label>对话模式</label><select class="select" id="app-team-mode">
       <option value="chat_react_agent" selected>ReAct Agent（默认）</option>
     </select></div>
     <div class="form-field"><label>📊 绑定数据源（可多选，可勾选预选数据表）</label><div class="checkbox-group" id="app-databases">${dsCheckboxes}</div><div class="form-hint" id="app-db-summary" style="margin-top:4px;color:var(--text-tertiary);font-size:12px;">未选择数据源</div></div>
-    <div class="form-field"><label>📚 绑定知识库（创建后不可变）</label><select class="select" id="app-knowledge"><option value="">不绑定</option>${(State.knowledgeSpaces || []).map(k => { const name = typeof k === "string" ? k : (k.name || k.space_name || ""); return `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`; }).join("")}</select></div>
     <div class="form-field"><label>模型</label><select class="select" id="app-model">${modelOptions || '<option value="TS/GLM-5.2">TS/GLM-5.2</option>'}</select></div>
     <div class="form-field"><label>📝 自定义提示词</label><select class="select" id="app-prompt"><option value="">不添加</option>${promptOptions}</select>
     <div class="form-hint" style="margin-top:4px">💡 选中的提示词会<strong>追加</strong>到默认 system prompt 的「Please Solve this task:」之前，作为业务约束/上下文补充。ReAct 格式约束保持不变。</div></div>
@@ -3204,26 +3220,42 @@ function collectAppTableHints(mode) {
 
 async function createApp() {
   const name = document.getElementById("app-name").value;
-  if (!name) { toast("应用名称不能为空", "error"); return; }
+  if (!name) { toast("智能体名称不能为空", "error"); return; }
   const questions = document.getElementById("app-questions").value.split("\n").map(s => s.trim()).filter(s => s);
-  const selectedDbs = Array.from(document.querySelectorAll('#app-databases input[type="checkbox"]:checked')).map(cb => cb.value);
+  const selectedModel = document.getElementById("app-model").value;
+  const tableHints = collectAppTableHints("create");
+  // 构造 dataSourceConfigs（varMap 内部结构）
+  const dataSourceConfigs = Object.keys(tableHints).map(dbName => ({
+    dbName: dbName,
+    tableNames: tableHints[dbName] || [],
+  }));
+  // 构造 AgentInsertRequest 格式（兼容外部平台 insertAgent 接口）
   const body = {
-    app_name: name,
-    app_describe: document.getElementById("app-describe").value,
-    team_mode: document.getElementById("app-team-mode").value,  // 字段名兼容后端
-    chat_mode: document.getElementById("app-team-mode").value,
-    database_names: selectedDbs,
-    database_tables: collectAppTableHints("create"),
-    knowledge_space: document.getElementById("app-knowledge").value,
-    model: document.getElementById("app-model").value,
-    prompt_template: document.getElementById("app-prompt").value,
-    temperature: parseFloat(document.getElementById("app-temperature").value) || 0.6,
-    max_new_tokens: parseInt(document.getElementById("app-max-tokens").value) || 4000,
-    recommend_questions: questions,
+    appName: name,
+    remark: document.getElementById("app-describe").value,
+    modelNames: [selectedModel],
+    guideQuestions: questions,
+    settingDescription: document.getElementById("app-prompt").value,
+    appCategoryId: 0,
+    managementMode: 0,
+    source: 0,
+    type: 1,
+    visible: 1,
+    enableSuggestedQuestions: 0,
+    isDefault: 0,
+    limited: 0,
+    permits: 0,
+    interval: 0,
+    unit: "",
+    tokens: 0,
+    sessionType: 0,
+    varMap: {
+      dataSourceConfigs: dataSourceConfigs,
+    },
   };
   try {
-    await api("POST", "/apps", body);
-    toast("应用创建成功", "success");
+    await api("POST", "/apps/insert", body);
+    toast("智能体创建成功", "success");
     closeModalDirect();
     loadApps();
   } catch (e) { toast("创建失败: " + e.message, "error"); }
