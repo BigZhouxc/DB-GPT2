@@ -3441,9 +3441,10 @@ POST /knowledge/llm/userDataSource/testConnection/v1
 {"id": 114}
 ```
 
-模式B — 编辑/创建时全量参数测试：
+模式B — 编辑/创建时全量参数测试（MySQL）：
 ```json
 {
+  "id": 114,
   "dbType": 0,
   "ip": "10.12.61.23",
   "port": 3299,
@@ -3453,6 +3454,18 @@ POST /knowledge/llm/userDataSource/testConnection/v1
   "dbName": "chase_book"
 }
 ```
+
+模式B — 编辑/创建时全量参数测试（SQLite）：
+```json
+{
+  "id": 42,
+  "dbType": 1,
+  "name": "Walmart_Sales",
+  "filePath": "/app/pilot/examples/Walmart_Sales.db"
+}
+```
+
+**类型映射**：`dbType: 0=MySQL, 1=SQLite, 4=Neo4j, 5=悦数`
 
 **响应**（成功）：
 ```json
@@ -3464,13 +3477,47 @@ POST /knowledge/llm/userDataSource/testConnection/v1
 {"code": 500, "msg": "连接失败: <error>", "success": false, "data": null}
 ```
 
-### 14.2 保存数据源（创建/更新）
+**说明**：
+- MySQL 类型：使用 `sqlalchemy` 真实连接 `SELECT 1` 测试
+- SQLite 类型：文件在本地可直接访问时用 `sqlite:///path` 测试；本地不可访问时（如 SQLite 文件仅在 db-gpt-webserver 容器内），委托 DB-GPT `GET /api/v2/serve/datasources/test?id={id}` 测试
+- 编辑弹窗模式下会附带 `id`，便于 SQLite 委托测试
+
+### 14.2 获取数据源详情
+
+```
+GET /knowledge/llm/userDataSource/detail/v1?id={id}
+```
+
+**响应**：
+```json
+{
+  "id": 24,
+  "type": "mysql",
+  "db_type": "mysql",
+  "dbType": 0,
+  "db_name": "chase_book",
+  "name": "chase_book",
+  "comment": "chase_book 测试库",
+  "description": "chase_book 测试库",
+  "params": {"host": "10.12.61.23", "port": 3299, "user": "root1", "password": "...", ...},
+  "ip": "10.12.61.23",
+  "port": 3299,
+  "username": "root1",
+  "password": "明文密码",
+  "filePath": "",
+  "db_path": ""
+}
+```
+
+**说明**：编辑弹窗使用此接口获取完整详情（含密码、文件路径），以便回显密码并支持测试连接。
+
+### 14.3 保存数据源（创建/更新）
 
 ```
 POST /knowledge/llm/userDataSource/upsert/v1
 ```
 
-**请求体**（无 id = 创建）：
+**请求体**（无 id = 创建，MySQL）：
 ```json
 {
   "dbName": "chase-tv",
@@ -3482,6 +3529,17 @@ POST /knowledge/llm/userDataSource/upsert/v1
   "port": 3299,
   "username": "root1",
   "password": "明文密码"
+}
+```
+
+**请求体**（无 id = 创建，SQLite）：
+```json
+{
+  "dbName": "Walmart_Sales 示例",
+  "dbType": 1,
+  "description": "沃尔玛销售示例数据库",
+  "name": "Walmart_Sales",
+  "filePath": "/app/pilot/examples/Walmart_Sales.db"
 }
 ```
 
@@ -3507,7 +3565,7 @@ POST /knowledge/llm/userDataSource/upsert/v1
 ```
 `data` = 数据源 ID（创建时为新 ID，更新时为原 ID）。
 
-### 14.3 删除数据源
+### 14.4 删除数据源
 
 ```
 POST /knowledge/llm/userDataSource/delete/v1
@@ -3526,11 +3584,13 @@ POST /knowledge/llm/userDataSource/delete/v1
 **前端对接**：
 - 数据源管理页改用 `POST /knowledge/llm/userDataSource/get/page/v1` 获取列表（分页+搜索）
 - 表格列：名称 / 类型 / 连接地址 / 备注 / 创建时间 / 操作（测试|编辑|注释|删除）
+- 类型显示：`0=MySQL`, `1=SQLite`, `4=Neo4j`, `5=悦数`
 - 搜索框实时过滤（`dbName` 参数）
 - 分页按钮（上一页/下一页）
-- 添加弹窗字段：类型(dbType下拉)/名称(name)/显示名(dbName)/主机/端口/用户名/密码/备注
-- 编辑弹窗：回显数据源详情 + 保存用 upsert 带 id
-- 测试连接：列表行按钮用 `{id}` 模式，弹窗内按钮用全量参数模式
+- 添加弹窗：类型下拉(MySQL/SQLite/Neo4j/悦数) / 名称(name) / 显示名(dbName) / MySQL字段(主机/端口/用户名/密码) / SQLite字段(文件路径) / 备注
+- 编辑弹窗：调用 `GET /knowledge/llm/userDataSource/detail/v1?id={id}` 获取完整详情（含密码回显）+ 保存用 upsert 带 id
+- 测试连接：列表行按钮用 `{id}` 模式A；弹窗内按钮用全量参数模式B（编辑时附带 id）
+- 测试通过标记：弹窗内 `_dsTestPassed` 标记，测试未通过时保存/创建需二次确认
 - 删除：确认后调 delete 接口
 
 ---
@@ -3548,7 +3608,7 @@ POST /knowledge/llm/userDataSource/delete/v1
 | AWEL Flow | 5 | `/flows` | |
 | Prompt | 5 | `/prompts` | |
 | App | 2 | `/apps` | |
-| 外部平台兼容 | 13 | 无 prefix（与外部平台路径一致） | 模型配置/数据源配置/insert/detail/update/dbNamesByIds/getTables/getComments/updateComments/chatWithDb/testConnection/upsert/delete |
+| 外部平台兼容 | 14 | 无 prefix（与外部平台路径一致） | 模型配置/数据源配置/insert/detail/update/dbNamesByIds/getTables/getComments/updateComments/chatWithDb/testConnection/upsert/delete/getDatasourceDetail |
 | 评估 | 1 | `/evaluation` | |
 | 系统 | 2 | `/` `/health` | |
-| **合计** | **76** | - | 含 2 个 deprecated 旧接口 |
+| **合计** | **77** | - | 含 2 个 deprecated 旧接口 |

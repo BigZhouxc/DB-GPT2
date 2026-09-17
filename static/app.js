@@ -1351,7 +1351,8 @@ async function loadDatasources(page) {
     } else {
       html += `<div class="table-wrapper"><table class="data-table"><thead><tr><th>名称</th><th>类型</th><th>连接地址</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>`;
       items.forEach(ds => {
-        const typeLabel = ds.dbType === 0 ? "MySQL" : (ds.dbType === 4 ? "Neo4j" : (ds.dbType === 5 ? "悦数" : "未知"));
+        const typeMap = { 0: "MySQL", 1: "SQLite", 4: "Neo4j", 5: "悦数" };
+        const typeLabel = typeMap[ds.dbType] || "未知";
         html += `<tr>
           <td><strong>${escapeHtml(ds.dbName || ds.name || "-")}</strong></td>
           <td><span class="tag tag-blue">${typeLabel}</span></td>
@@ -1413,13 +1414,16 @@ async function deleteDatasource(id) {
 }
 
 function showAddDsModal() {
+  _dsEditingId = null;
+  _dsTestPassed = false;
   openModal("添加数据源", `
     <div class="form-field"><label>数据库类型</label><select class="select" id="ds-type" onchange="toggleDsFields()">
       <option value="0">MySQL</option>
+      <option value="1">SQLite</option>
       <option value="4">Neo4j</option>
       <option value="5">悦数</option>
     </select></div>
-    <div class="form-field"><label>数据库名称 (name) *</label><input class="input" id="ds-name" placeholder="如 agent_test 或 chase_tv"></div>
+    <div class="form-field"><label>数据库名称 (name) *</label><input class="input" id="ds-name" placeholder="如 agent_test 或 Walmart_Sales"></div>
     <div class="form-field"><label>数据源显示名称 (dbName)</label><input class="input" id="ds-dbname" placeholder="如 测试_智能问数"></div>
     <div id="ds-mysql-fields">
       <div class="form-field"><label>主机地址</label><input class="input" id="ds-host" placeholder="如 10.12.61.23" value="10.12.61.23"></div>
@@ -1430,7 +1434,7 @@ function showAddDsModal() {
       <div class="form-field"><label>密码</label><input class="input" id="ds-pwd" type="password" placeholder="明文密码"></div>
     </div>
     <div id="ds-sqlite-fields" style="display:none">
-      <div class="form-field"><label>文件路径</label><input class="input" id="ds-path" placeholder="如 /app/pilot/examples/example.db"></div>
+      <div class="form-field"><label>文件路径 *</label><input class="input" id="ds-path" placeholder="如 /app/pilot/examples/Walmart_Sales.db"></div>
     </div>
     <div class="form-field"><label>备注说明</label><input class="input" id="ds-comment" placeholder="可选，如：双11电商数据"></div>
   `, [
@@ -1438,50 +1442,83 @@ function showAddDsModal() {
     { text: "测试连接", class: "btn", action: "testConnectionFromModal()" },
     { text: "创建", class: "btn btn-primary", action: "createDatasource()" },
   ]);
+  toggleDsFields();
 }
 
 function toggleDsFields() {
-  const type = document.getElementById("ds-type").value;
-  document.getElementById("ds-mysql-fields").style.display = type === "0" ? "" : "none";
-  document.getElementById("ds-sqlite-fields").style.display = type === "5" ? "" : "none";
+  const type = document.getElementById("ds-type")?.value || "0";
+  const mysqlFields = document.getElementById("ds-mysql-fields");
+  const sqliteFields = document.getElementById("ds-sqlite-fields");
+  if (mysqlFields) mysqlFields.style.display = type === "0" ? "" : "none";
+  if (sqliteFields) sqliteFields.style.display = type === "1" ? "" : "none";
 }
 
 function _getDsFormParams() {
-  const dbType = parseInt(document.getElementById("ds-type").value) || 0;
-  return {
+  const dbType = parseInt(document.getElementById("ds-type")?.value || "0") || 0;
+  const params = {
     dbType,
-    name: document.getElementById("ds-name").value,
+    name: document.getElementById("ds-name")?.value || "",
     dbName: document.getElementById("ds-dbname") ? document.getElementById("ds-dbname").value : "",
-    ip: document.getElementById("ds-host") ? document.getElementById("ds-host").value : "",
-    port: document.getElementById("ds-port") ? parseInt(document.getElementById("ds-port").value) || 0 : 0,
-    username: document.getElementById("ds-user") ? document.getElementById("ds-user").value : "",
-    password: document.getElementById("ds-pwd") ? document.getElementById("ds-pwd").value : "",
     dbSchema: "",
     description: document.getElementById("ds-comment") ? document.getElementById("ds-comment").value : "",
   };
+  if (dbType === 1) {
+    // SQLite
+    params.ip = "";
+    params.port = 0;
+    params.username = "";
+    params.password = "";
+    params.filePath = document.getElementById("ds-path") ? document.getElementById("ds-path").value : "";
+  } else {
+    // MySQL
+    params.ip = document.getElementById("ds-host") ? document.getElementById("ds-host").value : "";
+    params.port = document.getElementById("ds-port") ? parseInt(document.getElementById("ds-port").value) || 0 : 0;
+    params.username = document.getElementById("ds-user") ? document.getElementById("ds-user").value : "";
+    params.password = document.getElementById("ds-pwd") ? document.getElementById("ds-pwd").value : "";
+    params.filePath = "";
+  }
+  return params;
 }
+
+// 标记当前编辑/创建弹窗是否已通过测试
+let _dsTestPassed = false;
+// 当前编辑的数据源 ID（null=创建模式）
+let _dsEditingId = null;
 
 async function testConnectionFromModal() {
   const body = _getDsFormParams();
+  // 编辑模式时附带 ID（便于 SQLite 委托 DB-GPT 测试等场景）
+  if (_dsEditingId) body.id = _dsEditingId;
   if (!body.name) { toast("数据库名称不能为空", "error"); return; }
+  if (body.dbType === 1 && !body.filePath) { toast("SQLite 文件路径不能为空", "error"); return; }
+  if (body.dbType === 0 && (!body.ip || !body.username)) { toast("MySQL 主机地址和用户名不能为空", "error"); return; }
   toast("正在测试连接...", "info");
   try {
     const resp = await api("POST", "/knowledge/llm/userDataSource/testConnection/v1", body);
     if (resp.success) {
+      _dsTestPassed = true;
       toast("连接成功", "success");
     } else {
+      _dsTestPassed = false;
       toast("连接失败: " + (resp.msg || "未知错误"), "error");
     }
-  } catch (e) { toast("测试失败: " + e.message, "error"); }
+  } catch (e) {
+    _dsTestPassed = false;
+    toast("测试失败: " + e.message, "error");
+  }
 }
 
 async function createDatasource() {
   const body = _getDsFormParams();
   if (!body.name) { toast("数据库名称不能为空", "error"); return; }
+  if (!_dsTestPassed) {
+    if (!confirm("尚未测试连接或测试未通过，确定要直接创建吗？")) return;
+  }
   try {
     const resp = await api("POST", "/knowledge/llm/userDataSource/upsert/v1", body);
     if (resp.success) {
       toast("数据源创建成功", "success");
+      _dsTestPassed = false;
       closeModalDirect();
       await loadDatasources();
     } else {
@@ -1491,43 +1528,75 @@ async function createDatasource() {
 }
 
 async function editDatasource(id) {
-  // 从已加载数据源列表中找到详情
-  const ds = State.datasourceList.find(d => d.id === id);
-  if (!ds) { toast("数据源不存在，请刷新列表", "error"); return; }
+  // 从后端获取完整详情（含密码、文件路径等）
+  let detail = null;
+  try {
+    detail = await api("GET", `/knowledge/llm/userDataSource/detail/v1?id=${id}`);
+  } catch (e) {
+    toast("获取数据源详情失败: " + e.message, "error");
+    return;
+  }
+  if (!detail) { toast("数据源不存在，请刷新列表", "error"); return; }
 
-  openModal(`编辑数据源 — ${escapeHtml(ds.dbName || ds.name || "")}`, `
-    <div class="form-field" style="display:none"><label>数据库类型</label><select class="select" id="ds-type" onchange="toggleDsFields()">
-      <option value="0" ${ds.dbType === 0 ? "selected" : ""}>MySQL</option>
-      <option value="4" ${ds.dbType === 4 ? "selected" : ""}>Neo4j</option>
-      <option value="5" ${ds.dbType === 5 ? "selected" : ""}>悦数</option>
-    </select></div>
-    <div class="form-field"><label>数据库名称 (name)</label><input class="input" id="ds-name" value="${escapeAttr(ds.name || "")}"></div>
-    <div class="form-field"><label>数据源显示名称 (dbName)</label><input class="input" id="ds-dbname" value="${escapeAttr(ds.dbName || "")}"></div>
-    <div id="ds-mysql-fields">
-      <div class="form-field"><label>主机地址</label><input class="input" id="ds-host" value="${escapeAttr(ds.ip || "")}"></div>
-      <div class="form-row">
-        <div class="form-field form-field-half"><label>端口</label><input class="input" id="ds-port" type="number" value="${ds.port || 3306}"></div>
-        <div class="form-field form-field-half"><label>用户名</label><input class="input" id="ds-user" value="${escapeAttr(ds.username || "")}"></div>
-      </div>
-      <div class="form-field"><label>密码</label><input class="input" id="ds-pwd" type="password" placeholder="留空不修改"></div>
+  const dsDbName = detail.name || detail.db_name || "";
+  const dsDescription = detail.description || detail.comment || "";
+  const dsDbTypeStr = detail.type || detail.db_type || "mysql";
+  // 将字符串类型转为数字
+  const dsDbTypeInt = { "mysql": 0, "sqlite": 1, "neo4j": 4, "悦数": 5 }[dsDbTypeStr] ?? (detail.dbType !== undefined ? detail.dbType : 0);
+  const params = detail.params || {};
+  const dsHost = params.host || detail.ip || "";
+  const dsPort = params.port !== undefined ? params.port : (detail.port || 3306);
+  const dsUser = params.user || detail.username || "";
+  const dsPwd = params.password || detail.password || "";
+  const dsPath = params.path || detail.filePath || detail.db_path || "";
+
+  const mysqlHtml = `
+    <div class="form-field"><label>主机地址</label><input class="input" id="ds-host" value="${escapeAttr(dsHost)}"></div>
+    <div class="form-row">
+      <div class="form-field form-field-half"><label>端口</label><input class="input" id="ds-port" type="number" value="${dsPort}"></div>
+      <div class="form-field form-field-half"><label>用户名</label><input class="input" id="ds-user" value="${escapeAttr(dsUser)}"></div>
     </div>
-    <div class="form-field"><label>备注说明</label><input class="input" id="ds-comment" value="${escapeAttr(ds.description || "")}"></div>
+    <div class="form-field"><label>密码</label><input class="input" id="ds-pwd" type="password" value="${escapeAttr(dsPwd)}" placeholder="修改后重新输入"></div>
+  `;
+  const sqliteHtml = `
+    <div class="form-field"><label>文件路径 *</label><input class="input" id="ds-path" value="${escapeAttr(dsPath)}"></div>
+  `;
+
+  openModal(`编辑数据源 — ${escapeHtml(dsDbName)}`, `
+    <div class="form-field"><label>数据库类型</label><select class="select" id="ds-type" onchange="toggleDsFields()">
+      <option value="0" ${dsDbTypeInt === 0 ? "selected" : ""}>MySQL</option>
+      <option value="1" ${dsDbTypeInt === 1 ? "selected" : ""}>SQLite</option>
+      <option value="4" ${dsDbTypeInt === 4 ? "selected" : ""}>Neo4j</option>
+      <option value="5" ${dsDbTypeInt === 5 ? "selected" : ""}>悦数</option>
+    </select></div>
+    <div class="form-field"><label>数据库名称 (name)</label><input class="input" id="ds-name" value="${escapeAttr(dsDbName)}"></div>
+    <div class="form-field"><label>数据源显示名称 (dbName)</label><input class="input" id="ds-dbname" value="${escapeAttr(dsDescription)}"></div>
+    <div id="ds-mysql-fields">${mysqlHtml}</div>
+    <div id="ds-sqlite-fields" style="display:none">${sqliteHtml}</div>
+    <div class="form-field"><label>备注说明</label><input class="input" id="ds-comment" value="${escapeAttr(dsDescription)}"></div>
   `, [
     { text: "取消", class: "btn", action: "closeModalDirect()" },
     { text: "测试连接", class: "btn", action: "testConnectionFromModal()" },
     { text: "保存", class: "btn btn-primary", action: `saveDatasource(${id})` },
   ]);
+  _dsEditingId = id;
+  _dsTestPassed = false;
+  toggleDsFields();
 }
 
 async function saveDatasource(id) {
   const body = _getDsFormParams();
   if (!body.name) { toast("数据库名称不能为空", "error"); return; }
-  if (!body.password) { toast("请输入密码（编辑需重新输入）", "error"); return; }
+  // 测试未通过时阻止保存
+  if (!_dsTestPassed) {
+    if (!confirm("尚未测试连接或测试未通过，确定要直接保存吗？")) return;
+  }
   body.id = id;
   try {
     const resp = await api("POST", "/knowledge/llm/userDataSource/upsert/v1", body);
     if (resp.success) {
       toast("保存成功", "success");
+      _dsTestPassed = false;
       closeModalDirect();
       await loadDatasources();
     } else {

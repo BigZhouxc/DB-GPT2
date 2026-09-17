@@ -277,11 +277,21 @@ async def external_datasource_configs(req: ExternalPageRequest):
             db_type = item.get("type", item.get("db_type", ""))
             db_name = item.get("db_name", "")
             comment = item.get("comment", item.get("description", ""))
+            # 类型映射: mysql→0, sqlite→1, neo4j→4, 悦数→5, 其他→0
+            db_type_int = _str_type_to_int(db_type)
+            if db_type == "mysql":
+                jdbc_url = f"jdbc:mysql://{params.get('host','')}:{params.get('port',3306)}/{params.get('database',db_name)}"
+            elif db_type == "sqlite":
+                jdbc_url = ""
+            else:
+                jdbc_url = ""
+            # SQLite 的 ip/port 为空，用 file_path 替代
+            sqlite_path = params.get("path", item.get("db_path", "")) if db_type == "sqlite" else ""
             data.append({
                 "id": item.get("id"),
                 "userId": 0,
-                "dbType": 0 if db_type == "mysql" else (4 if db_type == "neo4j" else 0),
-                "jdbcUrl": f"jdbc:mysql://{params.get('host','')}:{params.get('port',3306)}/{params.get('database',db_name)}" if db_type == "mysql" else "",
+                "dbType": db_type_int,
+                "jdbcUrl": jdbc_url,
                 "dbName": comment or db_name,
                 "name": db_name,
                 "dbSchema": "",
@@ -289,10 +299,11 @@ async def external_datasource_configs(req: ExternalPageRequest):
                 "password": "",
                 "description": comment,
                 "isDeleted": 0,
-                "createTime": None,
-                "updateTime": None,
+                "createTime": item.get("gmt_created"),
+                "updateTime": item.get("gmt_modified"),
                 "ip": params.get("host", ""),
                 "port": params.get("port", 0),
+                "filePath": sqlite_path,
             })
         return {
             "code": 200,
@@ -1033,7 +1044,7 @@ class TestConnectionReq(BaseModel):
     2. 全量参数测试：传完整连接信息（创建/编辑时测试）
     """
     id: Optional[int] = None
-    dbType: Optional[int] = None       # 0=MySQL, 4=Neo4j, 5=悦数
+    dbType: Optional[int] = None       # 0=MySQL, 1=SQLite, 4=Neo4j, 5=悦数
     jdbcUrl: Optional[str] = None
     dbName: Optional[str] = None
     name: Optional[str] = None         # 数据库名（如 agent_test）
@@ -1043,6 +1054,7 @@ class TestConnectionReq(BaseModel):
     description: Optional[str] = None
     ip: Optional[str] = None
     port: Optional[Union[int, str]] = None
+    filePath: Optional[str] = None     # SQLite 文件路径
 
 
 class UpsertDsReq(BaseModel):
@@ -1051,7 +1063,7 @@ class UpsertDsReq(BaseModel):
     """
     id: Optional[int] = None
     dbName: str = ""                   # 数据源显示名称（如 "测试_智能问数"）
-    dbType: int = 0                    # 0=MySQL
+    dbType: int = 0                    # 0=MySQL, 1=SQLite, 4=Neo4j, 5=悦数
     dbSchema: str = ""
     description: str = ""
     ip: str = ""
@@ -1059,6 +1071,7 @@ class UpsertDsReq(BaseModel):
     port: Optional[Union[int, str]] = None
     username: str = ""
     password: str = ""
+    filePath: Optional[str] = None     # SQLite 文件路径（dbType=1 时必填）
 
 
 class DeleteDsReq(BaseModel):
@@ -1069,8 +1082,52 @@ class DeleteDsReq(BaseModel):
 
 def _dbtype_int_to_str(db_type_int: int) -> str:
     """外部平台 dbType 整数 → 本地类型字符串。"""
-    mapping = {0: "mysql", 4: "neo4j", 5: "悦数"}
+    mapping = {0: "mysql", 1: "sqlite", 4: "neo4j", 5: "悦数"}
     return mapping.get(db_type_int, "mysql")
+
+
+def _str_type_to_int(db_type_str) -> int:
+    """本地类型字符串 → 外部平台 dbType 整数。"""
+    if isinstance(db_type_str, int):
+        return db_type_str
+    mapping = {"mysql": 0, "sqlite": 1, "neo4j": 4, "悦数": 5}
+    return mapping.get(db_type_str, 0)
+
+
+# ---------------------------------------------------------------------------
+# 接口：GET /knowledge/llm/userDataSource/detail/v1?id={id} — 获取数据源详情（含密码）
+# ---------------------------------------------------------------------------
+
+@router.get("/knowledge/llm/userDataSource/detail/v1")
+async def get_datasource_detail(id: int):
+    """获取数据源完整详情（编辑弹窗使用，含密码、文件路径等）。"""
+    try:
+        ds = await _get_datasource_detail_by_id(id)
+        params = ds.get("params", {})
+        db_type_str = ds.get("type", ds.get("db_type", "mysql"))
+        if isinstance(db_type_str, int):
+            db_type_str = _dbtype_int_to_str(db_type_str)
+        return {
+            "id": id,
+            "type": db_type_str,
+            "db_type": db_type_str,
+            "dbType": _str_type_to_int(db_type_str),
+            "db_name": ds.get("db_name", ""),
+            "name": ds.get("db_name", ""),
+            "comment": ds.get("comment", ds.get("description", "")),
+            "description": ds.get("comment", ds.get("description", "")),
+            "params": params,
+            "ip": params.get("host", ""),
+            "port": params.get("port", 0),
+            "username": params.get("user", ""),
+            "password": params.get("password", ""),
+            "filePath": params.get("path", ds.get("db_path", "")),
+            "db_path": params.get("path", ds.get("db_path", "")),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, detail=f"获取数据源详情失败: {e}")
 
 
 @router.post("/knowledge/llm/userDataSource/testConnection/v1")
@@ -1080,6 +1137,8 @@ async def test_connection(req: TestConnectionReq):
     两种模式：
     - 模式A（按ID）：请求体只有 {id} → 从 DB-GPT 获取连接参数后测试
     - 模式B（全量参数）：请求体含 ip/port/name/username/password → 直接测试
+
+    支持 MySQL 和 SQLite 两种类型的真实连接测试。
     """
     try:
         from sqlalchemy import create_engine, text as sa_text
@@ -1090,8 +1149,9 @@ async def test_connection(req: TestConnectionReq):
         db_user = ""
         db_pwd = ""
         db_name = ""
+        sqlite_path = ""
 
-        if req.id and not req.ip:
+        if req.id and not req.ip and not req.jdbcUrl:
             # 模式A：按 ID 从 DB-GPT 获取连接参数
             detail = await _get_datasource_detail_by_id(req.id)
             params = detail.get("params", {})
@@ -1103,6 +1163,7 @@ async def test_connection(req: TestConnectionReq):
             db_user = params.get("user", detail.get("db_user", ""))
             db_pwd = params.get("password", "")
             db_name = detail.get("db_name", params.get("database", ""))
+            sqlite_path = params.get("path", detail.get("db_path", ""))
         else:
             # 模式B：全量参数
             db_type_int = req.dbType if req.dbType is not None else 0
@@ -1115,7 +1176,6 @@ async def test_connection(req: TestConnectionReq):
             # 如果有 jdbcUrl，尝试解析
             if req.jdbcUrl and not db_host:
                 jdbc = req.jdbcUrl
-                # jdbc:mysql://host:port/database?params
                 if "mysql://" in jdbc:
                     import re
                     m = re.search(r'mysql://([^:/]+):?(\d+)?/([^?]+)', jdbc)
@@ -1124,10 +1184,39 @@ async def test_connection(req: TestConnectionReq):
                         db_port = int(m.group(2)) if m.group(2) else 3306
                         db_name = m.group(3)
 
-        if db_type_str != "mysql":
-            # 非 MySQL 暂不支持真实测试，返回成功（前端需要可继续操作）
-            return {"code": 200, "msg": "Success", "success": True, "data": "连接成功"}
+        # --- SQLite 类型 ---
+        if db_type_str == "sqlite":
+            import os as _os
+            # 优先用 filePath（前端传入），否则用模式A取到的 path
+            file_path = getattr(req, "filePath", None) or sqlite_path
+            if not file_path:
+                return {"code": 500, "msg": "连接失败: 缺少 SQLite 文件路径", "success": False, "data": None}
+            # 如果文件在本地可访问（qna-agent 容器），直接测试
+            if _os.path.exists(file_path):
+                try:
+                    sqlite_url = f"sqlite:///{file_path}"
+                    engine = create_engine(sqlite_url, connect_args={"check_same_thread": False})
+                    with engine.connect() as conn:
+                        conn.execute(sa_text("SELECT 1"))
+                    engine.dispose()
+                    return {"code": 200, "msg": "Success", "success": True, "data": "连接成功"}
+                except Exception as e:
+                    return {"code": 500, "msg": f"连接失败: {e}", "success": False, "data": None}
+            # 如果本地不可访问，委托 DB-GPT 测试（文件在 db-gpt-webserver 容器内）
+            if req.id:
+                try:
+                    async with httpx.AsyncClient(timeout=10, trust_env=False) as c:
+                        r = await c.get(f"http://db-gpt-webserver-1:5670/api/v2/serve/datasources/test?id={req.id}")
+                        d = r.json()
+                    if d.get("success"):
+                        return {"code": 200, "msg": "Success", "success": True, "data": "连接成功"}
+                    else:
+                        return {"code": 500, "msg": f"连接失败: {d.get('err_msg', 'DB-GPT 测试失败')}", "success": False, "data": None}
+                except Exception as e:
+                    return {"code": 500, "msg": f"连接失败: 委托 DB-GPT 测试异常: {e}", "success": False, "data": None}
+            return {"code": 500, "msg": f"连接失败: SQLite 文件不可访问且无 ID 可委托测试: {file_path}", "success": False, "data": None}
 
+        # --- MySQL 类型：真实连接测试 ---
         if not db_host or not db_name:
             return {"code": 500, "msg": "连接失败: 缺少主机地址或数据库名", "success": False, "data": None}
 
@@ -1153,8 +1242,63 @@ async def upsert_datasource(req: UpsertDsReq):
         client = get_client()
         db_type_str = _dbtype_int_to_str(req.dbType)
         db_name = req.name or req.dbName
-        port_val = int(req.port) if req.port else 3306
+        port_val = int(req.port) if req.port else (0 if db_type_str == "sqlite" else 3306)
 
+        # SQLite 类型特殊处理：不需要 host/port/user/password，用 db_path
+        if db_type_str == "sqlite":
+            file_path = req.filePath or ""
+            if req.id:
+                # 更新
+                body = {
+                    "id": req.id,
+                    "db_type": "sqlite",
+                    "db_name": db_name,
+                    "db_host": "",
+                    "db_port": 0,
+                    "db_user": "",
+                    "db_pwd": "",
+                    "comment": req.description or req.dbName,
+                    "db_path": file_path,
+                }
+                res = await client.put("/datasources", body)
+                data = res.json()
+                if not data.get("success"):
+                    raise HTTPException(400, detail=str(data.get("err_msg", data)))
+                if req.description:
+                    try:
+                        conn = _get_mysql_conn()
+                        try:
+                            with conn.cursor() as cursor:
+                                cursor.execute(
+                                    "UPDATE connect_config SET comment = %s, gmt_modified = NOW() WHERE id = %s",
+                                    (req.description, req.id),
+                                )
+                            conn.commit()
+                        finally:
+                            conn.close()
+                    except Exception:
+                        pass
+                return {"code": 200, "msg": "Success", "success": True, "data": req.id}
+            else:
+                # 创建
+                body = {
+                    "db_type": "sqlite",
+                    "db_name": db_name,
+                    "db_host": "",
+                    "db_port": 0,
+                    "db_user": "",
+                    "db_pwd": "",
+                    "comment": req.description or req.dbName,
+                    "db_path": file_path,
+                }
+                res = await client.post("/datasources", body)
+                data = res.json()
+                if not data.get("success"):
+                    raise HTTPException(400, detail=str(data.get("err_msg", data)))
+                new_id = await _get_datasource_id_by_name(db_name)
+                return {"code": 200, "msg": "Success", "success": True, "data": new_id or 0}
+
+        # MySQL 类型
         if req.id:
             # 更新
             body = {
